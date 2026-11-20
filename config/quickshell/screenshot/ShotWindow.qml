@@ -215,6 +215,8 @@ PanelWindow {
       }
       onPressed: mouse => {
         shot.touch()
+        // clic sobre la barra de opciones: es de los botones, no empieza una selección nueva
+        if (obar.visible && mouse.x >= obar.x && mouse.x <= obar.x + obar.width && mouse.y >= obar.y && mouse.y <= obar.y + obar.height) { mouse.accepted = false; return }
         if (mouse.button === Qt.RightButton) { shot.back(); return }
         px = mouse.x; py = mouse.y; moved = false
         shot.beginDrag(win.sname, mouse.x, mouse.y)
