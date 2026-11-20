@@ -792,6 +792,12 @@ enable_services() {
 # Componentes del sistema que usa la barra (necesitan root)
 cmd_system() {
     local ks="$CEFT_DIR/system/vpn-killswitch" rc=0
+    info "Límites de espera del sistema al apagar/reiniciar"
+    sudo bash "$CEFT_DIR/system/shutdown/install.sh" "$USER" || rc=1
+    if has limine-snapper-sync; then
+        info "Limine: ruta real de limine.conf para los snapshots"
+        sudo bash "$CEFT_DIR/system/limine/install.sh" || rc=1
+    fi
     info "Killswitch VPN (/usr/local/bin/vpn-killswitch + sudoers + servicio docker)"
     sudo bash "$ks/install.sh" "$USER" || rc=1
     info "Brillo del monitor por DDC/CI (módulo i2c-dev + regla udev + grupo i2c)"

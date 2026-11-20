@@ -8,6 +8,7 @@
 set -euo pipefail
 DRY="${DRY_RUN:-}"
 USER_NAME="${1:-${SUDO_USER:-}}"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 [[ -n $USER_NAME ]] || { echo "pasá el usuario"; exit 1; }
 if [[ -z $DRY ]]; then [[ $EUID -eq 0 ]] || { echo "Ejecutar con sudo"; exit 1; }; fi
 
@@ -39,7 +40,12 @@ run systemctl enable --now snapper-cleanup.timer
 # 3. limine-snapper-sync
 if command -v limine-snapper-sync >/dev/null 2>&1; then
     run systemctl enable --now limine-snapper-sync.service
+    run bash "$HERE/../limine/install.sh"
     conf=${LIMINE_CONF:-}
+    if [[ -z $conf && -r /etc/default/limine ]]; then
+        esp=$(sed -n 's/^ESP_PATH=["\047]\(.*\)["\047]$/\1/p' /etc/default/limine)
+        [[ -n $esp ]] && conf=$esp/limine.conf
+    fi
     if [[ -z $conf ]]; then
         for d in /boot /efi /boot/efi /limine; do [[ -f $d/limine.conf ]] && { conf=$d/limine.conf; break; }; done
     fi

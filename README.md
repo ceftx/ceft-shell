@@ -145,3 +145,20 @@ como siempre y, si no está, del keyring.
   su ícono para que salga en el launcher (se abre sin depender de ninguna terminal). Desde el launcher, el prefijo `+` lista las
   AppImages sin registrar de `~/Downloads`/`~/Applications` y `Enter` registra. En Dolphin: clic derecho → *Registrar en el launcher*.
   Para correr una desde terminal sin que muera al cerrarla: `appimage run archivo.AppImage` (log en `~/.local/state/ceft-shell/`).
+
+### Límites al apagar y snapshots de Limine
+
+`ceft-shell system` instala límites de parada de 30 s para los servicios del sistema y 20 s para los del usuario.
+MariaDB define 15 minutos propio y se deja así por seguridad; para limitarlo a 2 minutos:
+
+```bash
+CEFT_FAST_DB=1 sudo -E bash ~/ceft-shell/system/shutdown/install.sh "$USER"
+```
+
+`system/limine/install.sh` detecta `limine.conf` incluso en `/boot/EFI/BOOT/`, escribe su `ESP_PATH`
+en `/etc/default/limine` y llama a `limine-snapper-sync`. Ambos pasos corren una sola vez con:
+
+```bash
+sudo bash ~/ceft-shell/system/shutdown/install.sh "$USER"
+sudo bash ~/ceft-shell/system/limine/install.sh
+```
