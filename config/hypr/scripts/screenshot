@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# Capturas estilo Omarchy.
+#   screenshot [region|output] [edit|copy]
+#     region : arrastra para una zona o haz click en una ventana (por defecto)
+#     output : el monitor enfocado entero
+#     edit   : abre satty para anotar (por defecto, si está instalado)
+#     copy   : solo guarda + copia al portapapeles
+set -euo pipefail
+
+mode=${1:-region}
+action=${2:-edit}
+dir="${SCREENSHOT_DIR:-$HOME/Pictures/Screenshots}"
+mkdir -p "$dir"
+file="$dir/screenshot-$(date +%Y-%m-%d_%H-%M-%S).png"
+
+json() { python3 -I -c "$1"; }
+
+case "$mode" in
+  region)
+    # Congela la pantalla mientras seleccionas (como Omarchy), si hay hyprpicker
+    freeze=""
+    if command -v hyprpicker >/dev/null; then
+      hyprpicker -r -z >/dev/null 2>&1 & freeze=$!
+      sleep 0.1
+    fi
+    # Rectángulos de las ventanas visibles: click = ventana, arrastrar = zona
+    boxes=$(hyprctl -j clients | json '
+import json, subprocess, sys
+ws = {m["activeWorkspace"]["id"] for m in json.loads(subprocess.check_output(["hyprctl", "-j", "monitors"]))}
+for c in json.load(sys.stdin):
+    if c["workspace"]["id"] in ws and c["mapped"] and not c["hidden"]:
+        print("%d,%d %dx%d" % (*c["at"], *c["size"]))')
+    geom=$(slurp -d <<<"$boxes") || { [ -n "$freeze" ] && kill "$freeze"; exit 1; }
+    grim -g "$geom" "$file"
+    [ -n "$freeze" ] && kill "$freeze" 2>/dev/null || true
+    ;;
+  output)
+    mon=$(hyprctl -j monitors | json 'import json,sys; print(next(m["name"] for m in json.load(sys.stdin) if m["focused"]))')
+    grim -o "$mon" "$file"
+    ;;
+  *) echo "uso: screenshot [region|output] [edit|copy]" >&2; exit 2 ;;
+esac
+
+wl-copy --type image/png < "$file"
+
+if [ "$action" = edit ] && command -v satty >/dev/null; then
+  satty --filename "$file" --output-filename "$file" \
+        --copy-command wl-copy --early-exit --actions-on-enter save-to-clipboard \
+        --save-after-copy >/dev/null 2>&1 &
+else
+  # Notificación con acción: abrir la imagen
+  ( act=$(notify-send -a Captura -i "$file" -A open=Abrir "Captura guardada" "$(basename "$file") · copiada al portapapeles" 2>/dev/null || true)
+    [ "$act" = open ] && xdg-open "$file" ) >/dev/null 2>&1 &
+fi

@@ -1,0 +1,7 @@
+# Configs de apps que reescriben su archivo al guardar (rompen los symlinks), por eso se COPIAN en vez de enlazarse.
+# Rutas relativas a ~/.config. `ceft-shell save` las copia al repo (files/) y `link`/`update` las restauran.
+mimeapps.list
+kiorc
+dolphinrc
+htop/htoprc
+git/ignore

@@ -1,0 +1,24 @@
+# Desarrollo
+# Node (fnm) — necesario para Claude Code, que alimenta el widget de uso de IA
+fnm
+docker
+docker-buildx
+docker-compose
+go
+bun
+pnpm
+jdk21-openjdk
+android-tools
+helix
+webkit2gtk-4.1
+mariadb-lts
+postgresql
+ollama
+ollama-vulkan
+# Terminal (config de fish/starship de ceftx/dotfiles): fzf.fish y funciones ff*
+fzf
+fd
+bat
+eza
+tmux
+neovim

@@ -1,0 +1,36 @@
+{
+  "weather": {
+    "city": "Caracas",
+    "latitude": 10.4806,
+    "longitude": -66.9036,
+    "units": "celsius"
+  },
+  "worldClocks": [
+    {
+      "city": "Buenos Aires",
+      "tz": "America/Argentina/Buenos_Aires"
+    },
+    {
+      "city": "Nueva York",
+      "tz": "America/New_York"
+    },
+    {
+      "city": "Madrid",
+      "tz": "Europe/Madrid"
+    }
+  ],
+  "profile": {
+    "name": "",
+    "avatar": "~/.face"
+  },
+  "enabled": [
+    "profile",
+    "clock",
+    "bigclock",
+    "media",
+    "weather",
+    "calendar",
+    "resources",
+    "converter"
+  ]
+}

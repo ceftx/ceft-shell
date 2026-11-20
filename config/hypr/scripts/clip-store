@@ -1,0 +1,192 @@
+#!/usr/bin/env bash
+# Historial del portapapeles de ceft-shell (envoltorio de cliphist con privacidad).
+#   clip-store store            stdin -> cliphist (lo llama `wl-paste --watch`); respeta la privacidad
+#   clip-store watch            arranca los vigilantes de wl-paste si no corren
+#   clip-store status           "cliphist=1 watching=1 paused=0"
+#   clip-store list             "id<TAB>epoch<TAB>vista previa" (mas reciente primero)
+#   clip-store copy <id>        copia el elemento (mime correcto para imagenes)
+#   clip-store paste <id>       copia y pega en la ventana que recupere el foco
+#   clip-store delete <id>      borra un elemento
+#   clip-store wipe             borra todo el historial
+#   clip-store pause [on|off|toggle]
+#
+# Privacidad: NO guarda si (a) el portapapeles trae x-kde-passwordManagerHint,
+# (b) la ventana activa (class/title) coincide con la lista de gestores de contrasenas,
+# (c) el historial esta pausado.
+#
+# Variables (todas opcionales; sirven para probar sin cliphist ni KeePass):
+#   CLIPHIST            binario de cliphist (por defecto "cliphist")
+#   CLIP_STATE_DIR      por defecto ~/.local/state/ceft-shell
+#   CLIP_PAUSE_FILE     por defecto $XDG_RUNTIME_DIR/ceft-clip-paused
+#   CLIP_TYPES          simula `wl-paste --list-types` (separado por saltos de linea)
+#   CLIP_ACTIVE         simula "class|title" de la ventana activa
+#   CLIP_PASTE_CMD      reemplaza el envio de Shift+Insert
+#   CLIP_NO_WATCH       no arrancar vigilantes
+# Ajustes (max_items, block) se leen de $CLIP_STATE_DIR/clip.conf, que escribe hypr/ceft/autostart.lua.
+
+CLIPHIST=${CLIPHIST:-cliphist}
+STATE=${CLIP_STATE_DIR:-$HOME/.local/state/ceft-shell}
+RUN=${XDG_RUNTIME_DIR:-/tmp}
+PAUSE=${CLIP_PAUSE_FILE:-$RUN/ceft-clip-paused}
+CACHE=${CLIP_CACHE_DIR:-$HOME/.cache/ceft-shell/clip}
+TIMES=$STATE/clip-times.tsv
+SELF=$(readlink -f "$0")
+mkdir -p "$STATE" 2>/dev/null
+
+conf() { # conf <clave> <defecto>
+  local v
+  v=$(sed -n "s/^$1=//p" "$STATE/clip.conf" 2>/dev/null | head -n1)
+  printf '%s' "${v:-$2}"
+}
+DEFAULT_BLOCK="keepass,keepassxc,bitwarden,1password,lastpass,dashlane,enpass,proton pass,protonpass,nordpass,gnome-keyring,seahorse"
+
+have() { command -v "$1" >/dev/null 2>&1; }
+
+active_window() { # imprime "class|initialClass|title|initialTitle"
+  if [ -n "${CLIP_ACTIVE+x}" ]; then printf '%s' "$CLIP_ACTIVE"; return; fi
+  local j; j=$(hyprctl activewindow -j 2>/dev/null) || return 0
+  for k in class initialClass title initialTitle; do
+    printf '%s|' "$(printf '%s' "$j" | grep -oP "\"$k\": *\"\K[^\"]*" | head -n1)"
+  done
+}
+
+is_blocked_window() {
+  local w b pat; w=$(active_window | tr 'A-Z' 'a-z')
+  [ -z "$w" ] && return 1
+  b=$(conf block "$DEFAULT_BLOCK")
+  IFS=',' read -ra pats <<<"$b"
+  for pat in "${pats[@]}"; do
+    pat=$(printf '%s' "$pat" | tr 'A-Z' 'a-z' | sed 's/^ *//;s/ *$//')
+    [ -n "$pat" ] && case "$w" in *"$pat"*) return 0 ;; esac
+  done
+  return 1
+}
+
+has_password_hint() {
+  local t
+  if [ -n "${CLIP_TYPES+x}" ]; then t=$CLIP_TYPES; else t=$(wl-paste --list-types 2>/dev/null); fi
+  printf '%s\n' "$t" | grep -qi '^x-kde-passwordManagerHint'
+}
+
+cmd_store() {
+  local tmp rc=0
+  tmp=$(mktemp "$RUN/ceft-clip.XXXXXX") || exit 1
+  trap 'rm -f "$tmp"' EXIT
+  cat >"$tmp"
+  [ -s "$tmp" ] || exit 0
+  [ -e "$PAUSE" ] && exit 0
+  has_password_hint && exit 0
+  is_blocked_window && exit 0
+  # texto solo en blanco: no vale la pena
+  if file -b --mime-type "$tmp" | grep -q '^text/' && ! grep -q '[^[:space:]]' "$tmp"; then exit 0; fi
+  have "$CLIPHIST" || exit 0
+  "$CLIPHIST" -max-items "$(conf max_items 1000)" store <"$tmp" || rc=$?
+  [ $rc -eq 0 ] || exit $rc
+  # marca de tiempo del elemento recien guardado
+  local id; id=$("$CLIPHIST" list | head -n1 | cut -f1)
+  [ -n "$id" ] && printf '%s\t%s\n' "$id" "$(date +%s)" >>"$TIMES"
+  if [ "$(wc -l <"$TIMES" 2>/dev/null || echo 0)" -gt 4000 ]; then
+    tail -n 2500 "$TIMES" >"$TIMES.tmp" && mv "$TIMES.tmp" "$TIMES"
+  fi
+}
+
+cmd_watch() {
+  [ -n "${CLIP_NO_WATCH:-}" ] && exit 0
+  have "$CLIPHIST" && have wl-paste || exit 0
+  pgrep -f "wl-paste --type text --watch $SELF" >/dev/null ||
+    setsid -f wl-paste --type text --watch "$SELF" store >/dev/null 2>&1
+  pgrep -f "wl-paste --type image --watch $SELF" >/dev/null ||
+    setsid -f wl-paste --type image --watch "$SELF" store >/dev/null 2>&1
+  exit 0
+}
+
+cmd_status() {
+  local c=0 w=0 p=0
+  have "$CLIPHIST" && c=1
+  if pgrep -f "wl-paste --type text --watch $SELF" >/dev/null || [ -n "${CLIP_NO_WATCH:-}" ]; then w=1; fi
+  [ -e "$PAUSE" ] && p=1
+  echo "cliphist=$c watching=$w paused=$p"
+}
+
+cmd_list() {
+  have "$CLIPHIST" || exit 0
+  mkdir -p "$CACHE"
+  find "$CACHE" -type f -mtime +7 -delete 2>/dev/null
+  "$CLIPHIST" -preview-width 400 list | awk -F'\t' -v tf="$TIMES" '
+    BEGIN { while ((getline l < tf) > 0) { split(l, a, "\t"); t[a[1]] = a[2] } }
+    { id = $1; sub(/^[^\t]*\t/, ""); printf "%s\t%s\t%s\n", id, (id in t ? t[id] : 0), $0 }'
+}
+
+mime_of() { file -b --mime-type "$1"; }
+
+cmd_copy() {
+  local id=$1 tmp mime
+  have "$CLIPHIST" || exit 1
+  tmp=$(mktemp "$RUN/ceft-clip.XXXXXX") || exit 1
+  trap 'rm -f "$tmp"' EXIT
+  "$CLIPHIST" decode "$id" >"$tmp" || exit 1
+  mime=$(mime_of "$tmp")
+  case "$mime" in
+    image/*) wl-copy --type "$mime" <"$tmp" ;;
+    *)       wl-copy <"$tmp" ;;
+  esac
+}
+
+send_paste() {
+  if [ -n "${CLIP_PASTE_CMD:-}" ]; then sh -c "$CLIP_PASTE_CMD"; return; fi
+  hyprctl dispatch 'hl.dsp.send_shortcut({ mods = "SHIFT", key = "Insert" })' >/dev/null 2>&1 && return
+  have wtype && wtype -M shift -k Insert -m shift
+}
+
+wait_focus_back() {
+  [ -n "${CLIP_PASTE_CMD:-}" ] && { sleep 0.2; return; }
+  local i
+  for i in $(seq 1 50); do
+    hyprctl layers 2>/dev/null | grep -q 'quickshell-launcher' || break
+    sleep 0.03
+  done
+  sleep 0.12
+}
+
+cmd_paste() {
+  if [ "$1" = "-text" ]; then shift; printf '%s' "$1" | wl-copy; else cmd_copy "$1" || exit 1; fi
+  wait_focus_back
+  send_paste
+}
+
+cmd_delete() {
+  have "$CLIPHIST" || exit 0
+  printf '%s\t\n' "$1" | "$CLIPHIST" delete
+  rm -f "$CACHE/$1.png"
+  [ -f "$TIMES" ] && grep -v "^$1	" "$TIMES" >"$TIMES.tmp" && mv "$TIMES.tmp" "$TIMES"
+  return 0
+}
+
+cmd_wipe() {
+  have "$CLIPHIST" && "$CLIPHIST" wipe
+  rm -f "$TIMES"
+  rm -rf "$CACHE"
+}
+
+cmd_pause() {
+  case "${1:-toggle}" in
+    on)  : >"$PAUSE" ;;
+    off) rm -f "$PAUSE" ;;
+    *)   if [ -e "$PAUSE" ]; then rm -f "$PAUSE"; else : >"$PAUSE"; fi ;;
+  esac
+  cmd_status
+}
+
+c=${1:-store}; [ $# -gt 0 ] && shift
+case "$c" in
+  store) cmd_store ;;
+  watch) cmd_watch ;;
+  status) cmd_status ;;
+  list) cmd_list ;;
+  copy) cmd_copy "$1" ;;
+  paste) cmd_paste "$@" ;;
+  delete) cmd_delete "$1" ;;
+  wipe) cmd_wipe ;;
+  pause) cmd_pause "$1" ;;
+  *) echo "uso: clip-store store|watch|status|list|copy|paste|delete|wipe|pause" >&2; exit 2 ;;
+esac

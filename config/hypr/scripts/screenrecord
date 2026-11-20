@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# Grabación de pantalla estilo Omarchy. La misma tecla empieza y para.
+#   screenrecord [region|output] [--audio]
+#     region : selecciona zona o ventana (por defecto)
+#     output : monitor enfocado entero
+#     --audio: graba también el audio del sistema
+# Usa gpu-screen-recorder (NVENC) y, si no está, wf-recorder.
+set -uo pipefail
+
+state="${XDG_RUNTIME_DIR:-/tmp}/screenrecord.state"   # "<pid> <archivo>"
+dir="${SCREENRECORD_DIR:-$HOME/Videos/Screenrecordings}"
+notify() { notify-send -a Grabación "$@" 2>/dev/null || true; }
+bar()    { qs ipc call recorder "$1" >/dev/null 2>&1 || true; }
+
+# ── Si ya está grabando: parar ──
+if [ -f "$state" ]; then
+  read -r pid file < "$state"
+  if kill -0 "$pid" 2>/dev/null; then
+    kill -INT "$pid"
+    for _ in $(seq 50); do kill -0 "$pid" 2>/dev/null || break; sleep 0.1; done
+    rm -f "$state"; bar stopped
+    ( act=$(notify-send -a Grabación -A open=Abrir -A folder=Carpeta "Grabación guardada" "$(basename "$file")" 2>/dev/null || true)
+      case "$act" in open) xdg-open "$file";; folder) xdg-open "$(dirname "$file")";; esac ) >/dev/null 2>&1 &
+    exit 0
+  fi
+  rm -f "$state"
+fi
+
+# ── Empezar ──
+mode=region; audio=0; given=""
+while [ $# -gt 0 ]; do
+  case "$1" in region|output) mode=$1;; --audio) audio=1;; --geom) shift; given=${1:-};; esac
+  shift
+done
+mkdir -p "$dir"
+file="$dir/screenrecord-$(date +%Y-%m-%d_%H-%M-%S).mp4"
+
+if [ "$mode" = region ]; then
+  boxes=$(hyprctl -j clients | python3 -I -c '
+import json, subprocess, sys
+ws = {m["activeWorkspace"]["id"] for m in json.loads(subprocess.check_output(["hyprctl", "-j", "monitors"]))}
+for c in json.load(sys.stdin):
+    if c["workspace"]["id"] in ws and c["mapped"] and not c["hidden"]:
+        print("%d,%d %dx%d" % (*c["at"], *c["size"]))')
+  # --geom "x,y wxh" (lo pasa el selector de capturas de Quickshell); si no, slurp
+  geom=${given:-$(slurp -d <<<"$boxes")} || exit 1   # "x,y wxh"
+  read -r xy wh <<<"$geom"
+else
+  mon=$(hyprctl -j monitors | python3 -I -c 'import json,sys; print(next(m["name"] for m in json.load(sys.stdin) if m["focused"]))')
+fi
+
+if command -v gpu-screen-recorder >/dev/null; then
+  args=(-f 60 -c mp4 -k h264 -o "$file")
+  if [ "$mode" = region ]; then
+    # dimensiones pares (requisito del codificador)
+    w=${wh%x*}; h=${wh#*x}; w=$((w / 2 * 2)); h=$((h / 2 * 2))
+    args+=(-w region -region "${w}x${h}+${xy%,*}+${xy#*,}")
+  else
+    args+=(-w "$mon")
+  fi
+  [ "$audio" = 1 ] && args+=(-a default_output)
+  nohup gpu-screen-recorder "${args[@]}" >/dev/null 2>&1 &
+elif command -v wf-recorder >/dev/null; then
+  args=(-f "$file")
+  if [ "$mode" = region ]; then args+=(-g "$geom"); else args+=(-o "$mon"); fi
+  [ "$audio" = 1 ] && args+=(--audio)
+  nohup wf-recorder "${args[@]}" >/dev/null 2>&1 &
+else
+  notify -u critical "No hay grabador" "Instala gpu-screen-recorder o wf-recorder"
+  exit 1
+fi
+pid=$!
+sleep 0.5
+if ! kill -0 "$pid" 2>/dev/null; then
+  notify -u critical "La grabación no pudo empezar" "Revisa el grabador"
+  exit 1
+fi
+echo "$pid $file" > "$state"
+bar started
+notify "Grabando…" "Pulsa la misma tecla (o el indicador de la barra) para parar"

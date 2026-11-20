@@ -1,0 +1,33 @@
+{
+  "groupBackground": false,
+  "showBackground": true,
+  "autohide": false,
+  "divider": "dots",
+  "left": [
+    "launcher",
+    "activeWindow"
+  ],
+  "center": [
+    "resources",
+    "workspaces",
+    "clock"
+  ],
+  "right": [
+    "record",
+    "privacy",
+    "tray",
+    "systemIcons",
+    "notifications",
+    "power"
+  ],
+  "tray": {
+    "tint": true,
+    "hidden": [
+      "nm-applet"
+    ]
+  },
+  "clock": {
+    "showWeather": true,
+    "showDate": true
+  }
+}

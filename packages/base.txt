@@ -1,0 +1,25 @@
+# Sistema base (normalmente ya viene de archinstall; --needed lo salta)
+base
+base-devel
+linux
+linux-firmware
+mkinitcpio
+sudo
+btrfs-progs
+zram-generator
+networkmanager
+wpa_supplicant
+ufw
+smartmontools
+git
+github-cli
+wget
+unzip
+zip
+nano
+vim
+htop
+fuse2
+python
+libsecret
+gnome-keyring

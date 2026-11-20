@@ -1,0 +1,3 @@
+# Herramientas de IA instaladas con npm global (Node vía fnm)
+# Claude Code: alimenta el widget de uso de IA de la barra (scripts/agent-*.py)
+@anthropic-ai/claude-code

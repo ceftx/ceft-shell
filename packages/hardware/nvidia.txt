@@ -1,0 +1,4 @@
+# Se instala solo si se detecta una GPU NVIDIA
+nvidia-open
+libva-nvidia-driver
+ollama-cuda

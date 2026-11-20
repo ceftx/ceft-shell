@@ -1,0 +1,15 @@
+# Solo de esta máquina
+config/hypr/local.lua
+config/kitty/local.conf
+# Generados
+config/kitty/theme.conf
+config/hypr/hyprlock-theme.conf
+config/hypr/hypridle.conf
+config/fish/fish_variables
+__pycache__/
+*.pyc
+*.bak
+config/ceft-shell/theme.json
+config/ceft-shell/theme.name
+gan-harness/
+config/fish/local.fish

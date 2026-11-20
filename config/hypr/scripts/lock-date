@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Fecha en español para la pantalla de bloqueo (no depende del locale instalado).
+d=(domingo lunes martes miércoles jueves viernes sábado)
+m=(enero febrero marzo abril mayo junio julio agosto septiembre octubre noviembre diciembre)
+printf '%s, %d de %s\n' "${d[$(date +%w)]}" "$((10#$(date +%d)))" "${m[$((10#$(date +%m) - 1))]}"

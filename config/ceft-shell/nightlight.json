@@ -1,0 +1,7 @@
+{
+  "enabled": false,
+  "temp": 2400,
+  "auto": false,
+  "from": "20:00",
+  "to": "07:00"
+}

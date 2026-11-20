@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# Ejecuta una acción de captura sobre una región.
+#   shot-do <acción> <fuente> <escala> <x> <y> <w> <h>
+#   acción : copy | save | edit | ocr | qr
+#   fuente : archivo .ppm congelado por el selector (coords locales, x y w h en px lógicos)
+#            o "live:<monitor>" (captura el monitor entero ahora; ignora x y w h)
+# Env: SCREENSHOT_DIR (por defecto ~/Pictures/Screenshots)
+set -uo pipefail
+action=$1 src=$2 scale=${3:-1} x=${4:-0} y=${5:-0} w=${6:-0} h=${7:-0}
+dir="${SCREENSHOT_DIR:-$HOME/Pictures/Screenshots}"
+notify() { notify-send -a Captura "$@" 2>/dev/null || true; }
+work=$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/ceft-shot-do.XXXXXX")
+cleanup() { rm -rf "$work"; [ "${src#live:}" = "$src" ] && rm -rf "$(dirname "$src")"; }
+trap cleanup EXIT
+
+raw="$work/raw.png"
+if [ "${src#live:}" != "$src" ]; then
+  grim -o "${src#live:}" "$raw" || { notify -u critical "No se pudo capturar" "grim falló"; exit 1; }
+else
+  # px lógicos -> px reales del monitor
+  read -r cx cy cw ch < <(awk -v s="$scale" -v x="$x" -v y="$y" -v w="$w" -v h="$h" \
+    'BEGIN { printf "%d %d %d %d\n", x*s+0.5, y*s+0.5, (w*s<1?1:w*s)+0.5, (h*s<1?1:h*s)+0.5 }')
+  ffmpeg -v error -y -i "$src" -vf "crop=${cw}:${ch}:${cx}:${cy}" "$raw" 2>"$work/err" \
+    || { notify -u critical "No se pudo recortar" "$(head -c 200 "$work/err")"; exit 1; }
+fi
+
+save() {
+  mkdir -p "$dir"
+  file="$dir/screenshot-$(date +%Y-%m-%d_%H-%M-%S).png"
+  cp "$raw" "$file"
+}
+release() { rm -rf "$work"; [ "${src#live:}" = "$src" ] && rm -rf "$(dirname "$src")"; return 0; }
+open_notify() {   # $1 título, $2 cuerpo (libera los temporales antes de esperar la notificación)
+  release
+  act=$(notify-send -a Captura -i "$file" -A open=Abrir "$1" "$2" 2>/dev/null || true)
+  [ "$act" = open ] && xdg-open "$file"
+}
+
+case "$action" in
+  copy)
+    save; wl-copy --type image/png < "$file"
+    open_notify "Captura copiada" "$(basename "$file") · guardada y en el portapapeles" ;;
+  save)
+    save
+    open_notify "Captura guardada" "$(basename "$file")" ;;
+  edit)
+    save; wl-copy --type image/png < "$file"; release
+    if command -v satty >/dev/null; then
+      satty --filename "$file" --output-filename "$file" \
+            --copy-command wl-copy --early-exit --actions-on-enter save-to-clipboard \
+            --save-after-copy >/dev/null 2>&1
+    else
+      open_notify "Captura copiada" "Instalá satty para anotar · $(basename "$file")"
+    fi ;;
+  ocr)
+    if ! command -v tesseract >/dev/null; then notify -u critical "OCR no disponible" "Instalá tesseract tesseract-data-spa tesseract-data-eng"; exit 1; fi
+    langs=$(tesseract --list-langs 2>/dev/null | tail -n +2)
+    use=""
+    for l in spa eng; do grep -qx "$l" <<<"$langs" && use="${use:+$use+}$l"; done
+    [ -z "$use" ] && { notify -u critical "OCR sin idiomas" "Instalá tesseract-data-spa y tesseract-data-eng"; exit 1; }
+    text=$(tesseract "$raw" stdout -l "$use" 2>/dev/null | sed -e 's/[[:space:]]*$//' | cat -s)
+    text=$(printf '%s' "$text" | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}')
+    if [ -z "${text//[[:space:]]/}" ]; then notify "OCR: sin texto" "No se reconoció texto en la selección"; exit 0; fi
+    printf '%s' "$text" | wl-copy
+    notify "Texto copiado (OCR)" "$(printf '%s' "$text" | head -c 240)" ;;
+  qr)
+    if ! command -v ZXingReader >/dev/null; then notify -u critical "QR no disponible" "Instalá zxing-cpp"; exit 1; fi
+    text=$(ZXingReader -single -bytes "$raw" 2>/dev/null)
+    if [ -z "$text" ]; then notify "QR: no se encontró" "No hay un código legible en la selección"; exit 0; fi
+    printf '%s' "$text" | wl-copy
+    notify "QR copiado" "$(printf '%s' "$text" | head -c 240)" ;;
+  *) echo "acción desconocida: $action" >&2; exit 2 ;;
+esac

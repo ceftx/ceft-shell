@@ -1,0 +1,1168 @@
+#!/usr/bin/env bash
+# ceft-shell · gestor del entorno
+# Uso: ceft-shell <comando> [args]   (ceft-shell help para la lista)
+set -euo pipefail
+
+CEFT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+CONFIG_SRC="$CEFT_DIR/config"
+PKG_DIR="$CEFT_DIR/packages"
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/ceft-shell"
+CFG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+THEME_DIR="$CONFIG_SRC/ceft-shell/themes"
+DEFAULT_GROUPS="base desktop apps dev"
+
+# ── salida ──────────────────────────────────────────────────────────
+if [ -t 1 ]; then B=$'\e[1m'; G=$'\e[32m'; Y=$'\e[33m'; R=$'\e[31m'; C=$'\e[36m'; N=$'\e[0m'; else B= G= Y= R= C= N=; fi
+info() { printf '%s==>%s %s\n' "$C$B" "$N" "$*"; }
+ok()   { printf '%s ✓%s %s\n' "$G" "$N" "$*"; }
+warn() { printf '%s !%s %s\n' "$Y" "$N" "$*" >&2; }
+die()  { printf '%s ✗%s %s\n' "$R" "$N" "$*" >&2; exit 1; }
+has()  { command -v "$1" >/dev/null 2>&1; }
+in_hypr() { [ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ] && has hyprctl; }
+
+# ── paquetes ────────────────────────────────────────────────────────
+read_list() { grep -hv '^\s*#' "$@" 2>/dev/null | awk 'NF {print $1}'; }
+
+hardware_lists() {
+    local gpus; gpus=$(lspci 2>/dev/null | grep -Ei 'vga|3d|display' || true)
+    grep -qi nvidia <<<"$gpus" && echo "$PKG_DIR/hardware/nvidia.txt"
+    grep -Eqiw 'amd|ati|radeon' <<<"$gpus" && echo "$PKG_DIR/hardware/amd-gpu.txt"
+    grep -q GenuineIntel /proc/cpuinfo && echo "$PKG_DIR/hardware/intel-cpu.txt"
+    grep -q AuthenticAMD /proc/cpuinfo && echo "$PKG_DIR/hardware/amd-cpu.txt"
+    true
+}
+
+saved_groups() { cat "$STATE_DIR/groups" 2>/dev/null || echo "$DEFAULT_GROUPS"; }
+
+group_files() {
+    local g; for g in "$@"; do
+        [ -f "$PKG_DIR/$g.txt" ] || die "grupo de paquetes desconocido: $g (ver packages/)"
+        echo "$PKG_DIR/$g.txt"
+    done
+    hardware_lists
+}
+
+ensure_paru() {
+    has paru && return
+    info "Instalando paru (AUR helper)"
+    sudo pacman -S --needed --noconfirm git base-devel
+    local tmp; tmp=$(mktemp -d)
+    git clone --depth 1 https://aur.archlinux.org/paru-bin.git "$tmp/paru-bin"
+    (cd "$tmp/paru-bin" && makepkg -si --noconfirm)
+    rm -rf "$tmp"
+}
+
+missing_pkgs() { read_list "$@" | sort -u | while read -r p; do pacman -Qq "$p" >/dev/null 2>&1 || echo "$p"; done; }
+
+install_pkgs() {
+    local -a pkgs; mapfile -t pkgs < <(missing_pkgs "$@")
+    if [ ${#pkgs[@]} -eq 0 ]; then ok "Paquetes al día"; return; fi
+    info "Instalando ${#pkgs[@]} paquetes: ${pkgs[*]}"
+    paru -S --needed ${CEFT_YES:+--noconfirm} "${pkgs[@]}"
+}
+
+# ── enlaces ─────────────────────────────────────────────────────────
+cmd_link() {
+    local backup="$STATE_DIR/backups/$(date +%Y%m%d-%H%M%S)" src name dst moved=0
+    mkdir -p "$CFG_HOME"
+    for src in "$CONFIG_SRC"/*/; do
+        src=${src%/}; name=$(basename "$src"); dst="$CFG_HOME/$name"
+        if [ -L "$dst" ] && [ "$(readlink -f "$dst")" = "$(readlink -f "$src")" ]; then continue; fi
+        if [ -e "$dst" ] || [ -L "$dst" ]; then
+            mkdir -p "$backup"; mv "$dst" "$backup/$name"; moved=1
+            warn "~/.config/$name existía: respaldado en $backup/$name"
+        fi
+        ln -s "$src" "$dst"; ok "~/.config/$name → $src"
+    done
+    mkdir -p "$HOME/.local/bin"
+    ln -sfn "$CEFT_DIR/bin/ceft-shell" "$HOME/.local/bin/ceft-shell"
+    touch "$CONFIG_SRC/kitty/local.conf"
+    if [ ! -f "$CONFIG_SRC/ceft-shell/theme.json" ]; then
+        cp "$THEME_DIR/tokyo-night.json" "$CONFIG_SRC/ceft-shell/theme.json"; echo tokyo-night > "$CONFIG_SRC/ceft-shell/theme.name"
+    fi
+    [ -f "$CONFIG_SRC/kitty/theme.conf" ] || theme_kitty
+    [ -f "$CONFIG_SRC/hypr/hyprlock-theme.conf" ] || theme_lock
+    theme_vscode
+    [ -f "$CONFIG_SRC/hypr/hypridle.conf" ] || idle_conf
+    [ $moved = 1 ] && info "Respaldo de configs anteriores: $backup"
+    files_pull
+    ok "Enlaces listos"
+}
+
+# ── tema ────────────────────────────────────────────────────────────
+theme_kitty() {
+    python3 -I - "$CONFIG_SRC/ceft-shell/theme.json" "$CONFIG_SRC/kitty/theme.conf" <<'PY'
+import json, sys
+t = json.load(open(sys.argv[1]))
+m = {"background": "background", "term_fg": "foreground", "cursor": "cursor",
+     "selection": "selection_background", "accent": "active_border_color", "border": "inactive_border_color"}
+lines = [f"# Generado por ceft-shell theme ({t.get('name', '')}). No editar."]
+lines += [f"{k} {t[j]}" for j, k in m.items() if j in t]
+lines += [f"color{i} {t[f'color{i}']}" for i in range(16) if f"color{i}" in t]
+open(sys.argv[2], "w").write("\n".join(lines) + "\n")
+PY
+}
+
+# Extensión de tema "Ceft (wallpaper)" para VS Code (no toca settings.json; el usuario elige el tema una vez
+# y VS Code relee el archivo al recargar la ventana). Solo escribe donde VS Code ya está instalado.
+theme_vscode() {
+    local -a dirs=(); local d
+    for d in "$HOME/.vscode-insiders/extensions" "$HOME/.vscode/extensions"; do
+        [ -d "$d" ] && dirs+=("$d")
+    done
+    [ ${#dirs[@]} -gt 0 ] || return 0
+    python3 -I "$CEFT_DIR/system/vscode-theme/generate.py" "$CONFIG_SRC/ceft-shell/theme.json" "${dirs[@]}" >/dev/null \
+        || warn "no pude generar el tema de VS Code"
+}
+
+# Colores y wallpaper de hyprlock (hyprlock.conf hace `source` de este archivo)
+theme_lock() {
+    python3 -I - "$CONFIG_SRC/ceft-shell/theme.json" "$CONFIG_SRC/hypr/hyprlock-theme.conf" \
+        "$STATE_DIR/wallpaper" <<'PY'
+import json, os, sys
+t = json.load(open(sys.argv[1]))
+try: wall = open(sys.argv[3]).read().strip()
+except OSError: wall = ""
+if not os.path.isfile(wall): wall = t.get("wallpaper", "")
+if not os.path.isfile(wall): wall = ""
+def rgba(k, a, d="#000000"):
+    h = t.get(k, d).lstrip("#")[:6]
+    return f"rgba({h}{int(round(a * 255)):02x})"
+L = [f"# Generado por ceft-shell theme|wall ({t.get('name', '')}). No editar."]
+L += [f"$lock_wall = {wall if wall else 'screenshot'}"]
+for k, v in {
+    "lock_bg": rgba("background", 1), "lock_veil": rgba("background", 0.38),
+    "lock_fg": rgba("foreground", 1), "lock_dim": rgba("dim", 1),
+    "lock_accent": rgba("accent", 1), "lock_glass": rgba("surface", 0.42),
+    "lock_edge": rgba("border", 0.75), "lock_field": rgba("background", 0.45),
+    "lock_error": rgba("color1", 1, "#ffb4ab"), "lock_warn": rgba("yellow", 1, "#d7b76e"),
+}.items():
+    L.append(f"${k} = {v}")
+face = os.path.expanduser("~/.face")
+if os.path.isfile(face):   # avatar circular solo si existe ~/.face
+    L += ["", "image {", "    monitor =", f"    path = {face}", "    size = 84", "    rounding = -1",
+          "    border_size = 2", "    border_color = $lock_accent", "    position = 0, -55",
+          "    halign = center", "    valign = center", "}"]
+open(sys.argv[2], "w").write("\n".join(L) + "\n")
+PY
+}
+
+# ── inactividad (hypridle) ──────────────────────────────────────────
+IDLE_JSON="$CONFIG_SRC/ceft-shell/idle.json"
+
+idle_get() {   # idle_get <lock_min|off_min> <defecto>
+    python3 -I -c 'import json,sys
+try: print(int(json.load(open(sys.argv[1]))[sys.argv[2]]))
+except Exception: print(sys.argv[3])' "$IDLE_JSON" "$1" "$2"
+}
+
+idle_conf() {
+    local lock off; lock=$(idle_get lock_min 10); off=$(idle_get off_min 15)
+    {
+        echo "# Generado por ceft-shell idle (config/ceft-shell/idle.json). No editar."
+        cat <<'EOF'
+general {
+    lock_cmd = pidof hyprlock || hyprlock
+    before_sleep_cmd = loginctl lock-session
+    after_sleep_cmd = hyprctl dispatch 'hl.dsp.dpms({action = "on"})'
+}
+EOF
+        if [ "$lock" -gt 0 ]; then
+            printf '\nlistener {\n    timeout = %d\n    on-timeout = loginctl lock-session\n}\n' $((lock * 60))
+        fi
+        if [ "$off" -gt 0 ]; then
+            printf '\nlistener {\n    timeout = %d\n' $((off * 60))
+            echo "    on-timeout = hyprctl dispatch 'hl.dsp.dpms({action = \"off\"})'"
+            echo "    on-resume = hyprctl dispatch 'hl.dsp.dpms({action = \"on\"})'"
+            echo "}"
+        fi
+    } > "$CONFIG_SRC/hypr/hypridle.conf"
+}
+
+idle_restart() {
+    has hypridle || { warn "falta hypridle (sudo pacman -S hypridle)"; return 0; }
+    pkill -x hypridle 2>/dev/null || true
+    for _ in 1 2 3 4 5 6 7 8 9 10; do pgrep -x hypridle >/dev/null || break; sleep 0.1; done
+    setsid -f hypridle >/dev/null 2>&1 </dev/null
+}
+
+cmd_idle() {
+    local lock off
+    if [ "${1:-}" = --json ]; then
+        printf '{"lock_min": %s, "off_min": %s}\n' "$(idle_get lock_min 10)" "$(idle_get off_min 15)"
+        return
+    fi
+    if [ $# -eq 0 ]; then
+        lock=$(idle_get lock_min 10); off=$(idle_get off_min 15)
+        echo "Bloquear a los $lock min · apagar pantalla a los $off min (0 = nunca)"
+        return
+    fi
+    [ $# -eq 2 ] || die "uso: ceft-shell idle [<lock_min> <off_min>]  (minutos, 0 = nunca)"
+    lock=$1; off=$2
+    [[ $lock =~ ^[0-9]{1,4}$ && $off =~ ^[0-9]{1,4}$ ]] || die "los minutos deben ser enteros (0-9999)"
+    lock=$((10#$lock)); off=$((10#$off))
+    if [ "$lock" -gt 0 ] && [ "$off" -gt 0 ] && [ "$off" -le "$lock" ]; then
+        die "apagar pantalla ($off) debe ser mayor que bloquear ($lock), o 0 para no apagar"
+    fi
+    printf '{\n  "lock_min": %d,\n  "off_min": %d\n}\n' "$lock" "$off" > "$IDLE_JSON"
+    idle_conf; idle_restart
+    ok "Inactividad: bloquear a los $lock min, apagar pantalla a los $off min"
+}
+
+cmd_theme() {
+    local name=${1:-}
+    if [ -z "$name" ] || [ "$name" = list ]; then
+        local cur; cur=$(cat "$CONFIG_SRC/ceft-shell/theme.name" 2>/dev/null || true)
+        for f in "$THEME_DIR"/*.json; do
+            local n; n=$(basename "$f" .json)
+            [ "$n" = "$cur" ] && printf ' %s*%s %s\n' "$G" "$N" "$n" || printf '   %s\n' "$n"
+        done
+        return
+    fi
+    if [ "$name" = wallpaper ]; then
+        echo wallpaper > "$CONFIG_SRC/ceft-shell/theme.name"
+        local cur; cur=$(cat "$STATE_DIR/wallpaper" 2>/dev/null || true)
+        [ -f "$cur" ] || die "todavía no hay wallpaper (ceft-shell wall random)"
+        theme_from_wall "$cur"; theme_apply
+        ok "Tema: colores del wallpaper (cambian con cada wallpaper)"
+        return
+    fi
+    [ -f "$THEME_DIR/$name.json" ] || die "no existe el tema '$name' (ceft-shell theme list)"
+    python3 -I -c 'import json,sys; json.load(open(sys.argv[1]))' "$THEME_DIR/$name.json" || die "JSON inválido"
+    cp "$THEME_DIR/$name.json" "$CONFIG_SRC/ceft-shell/theme.json"
+    echo "$name" > "$CONFIG_SRC/ceft-shell/theme.name"
+    theme_apply
+    ok "Tema: $name (Hyprland, Quickshell y kitty)"
+}
+
+theme_apply() {
+    theme_kitty
+    theme_lock
+    theme_vscode
+    in_hypr && hyprctl reload >/dev/null || true
+    gm_active && gm_apply_look || true   # el reload revierte el modo juego: reaplicarlo
+    pkill -USR1 -x kitty 2>/dev/null || true
+}
+
+# Paleta Material You del wallpaper (matugen) → theme.json de ceft-shell
+theme_from_wall() {
+    has matugen || die "falta matugen (sudo pacman -S matugen)"
+    local raw
+    raw=$(matugen image "$1" --json hex --dry-run -m dark --prefer "${CEFT_MATUGEN_PREFER:-saturation}" 2>&1) \
+        || die "matugen falló: $(tail -3 <<<"$raw")"
+    CEFT_MATUGEN_JSON=$raw python3 -I - "$1" "$CONFIG_SRC/ceft-shell/theme.json" <<'PY' || die "no pude leer los colores de matugen"
+import json, os, sys
+raw = os.environ["CEFT_MATUGEN_JSON"]
+d = json.loads(raw[raw.index("{"):])
+c = d.get("colors", d)
+if isinstance(c.get("dark"), dict) and "primary" in c["dark"]:      # matugen 2.x/3.x
+    p = c["dark"]
+else:                                                               # matugen 4.x
+    pick = lambda v: v.get("dark", v.get("default")) if isinstance(v, dict) else v
+    p = {k: (pick(v)["color"] if isinstance(pick(v), dict) else pick(v)) for k, v in c.items()}
+
+def mix(a, b, t):
+    a, b = int(a[1:], 16), int(b[1:], 16)
+    ch = lambda x, s: (x >> s) & 255
+    return "#%02x%02x%02x" % tuple(round(ch(a, s) * (1 - t) + ch(b, s) * t) for s in (16, 8, 0))
+
+g = lambda *ks: next(p[k] for k in ks if k in p)
+green  = mix("#9ece6a", g("primary"), 0.25)
+yellow = mix("#e0af68", g("primary"), 0.25)
+t = {
+    "name": "Wallpaper · " + os.path.basename(sys.argv[1]),
+    "wallpaper": sys.argv[1],
+    "background": g("surface"), "foreground": g("on_surface"), "dim": g("outline"),
+    "accent": g("primary"), "accent2": g("tertiary"), "active": g("tertiary"),
+    "yellow": yellow, "green": green,
+    "surface": g("surface_container_high", "surface_variant"),
+    "border": g("outline_variant", "outline"), "shadow": "#000000",
+    "cursor": g("on_surface"), "selection": g("secondary_container"), "term_fg": g("on_surface"),
+    "color0": g("surface_container", "surface"), "color8": g("outline_variant", "outline"),
+    "color1": g("error"), "color9": g("error"),
+    "color2": green, "color10": green, "color3": yellow, "color11": yellow,
+    "color4": g("primary"), "color12": g("primary"),
+    "color5": g("tertiary"), "color13": g("tertiary"),
+    "color6": g("secondary"), "color14": g("secondary"),
+    "color7": g("on_surface_variant"), "color15": g("on_surface"),
+}
+json.dump(t, open(sys.argv[2], "w"), indent=2)
+PY
+}
+
+# ── wallpaper ───────────────────────────────────────────────────────
+WALL_DIR="${CEFT_WALL_DIR:-$HOME/Pictures/Wallpapers}"
+
+walls() { find -L "$WALL_DIR" -maxdepth 2 -type f \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' -o -iname '*.webp' -o -iname '*.gif' \) 2>/dev/null | sort; }
+
+awww_ready() {
+    has awww || die "falta awww (sudo pacman -S awww)"
+    awww query >/dev/null 2>&1 && return
+    setsid -f awww-daemon >/dev/null 2>&1
+    for _ in $(seq 30); do awww query >/dev/null 2>&1 && return; sleep 0.1; done
+    die "awww-daemon no arrancó"
+}
+
+cmd_wall() {
+    local arg=${1:-next} cur f
+    cur=$(cat "$STATE_DIR/wallpaper" 2>/dev/null || true)
+    case $arg in
+        list) walls; return ;;
+        restore)   # al iniciar Hyprland: sin awww o sin imágenes, no hace nada
+            has awww || exit 0
+            f=$cur; [ -f "$f" ] || f=$(walls | head -1); [ -n "$f" ] || exit 0 ;;
+        random) f=$(walls | grep -vxF "$cur" | shuf -n1) ;;
+        next|prev)
+            local -a all; mapfile -t all < <(walls)
+            [ ${#all[@]} -gt 0 ] || die "no hay imágenes en $WALL_DIR"
+            local i=-1 j; for j in "${!all[@]}"; do [ "${all[$j]}" = "$cur" ] && i=$j; done
+            [ "$arg" = next ] && i=$(( (i + 1) % ${#all[@]} )) || i=$(( (i - 1 + ${#all[@]}) % ${#all[@]} ))
+            f=${all[$i]} ;;
+        *) f=$(readlink -f "$arg") ;;
+    esac
+    [ -f "$f" ] || die "no hay imágenes en $WALL_DIR (o no existe '$arg')"
+    awww_ready
+    local pos="center"
+    in_hypr && pos=$(hyprctl cursorpos 2>/dev/null | tr -d ' ' || echo center)
+    awww img "$f" --transition-type "${CEFT_WALL_TRANSITION:-grow}" --transition-pos "${pos:-center}" --invert-y \
+        --transition-duration 1.2 --transition-fps 120 >/dev/null
+    mkdir -p "$STATE_DIR"; echo "$f" > "$STATE_DIR/wallpaper"
+    if [ "$(cat "$CONFIG_SRC/ceft-shell/theme.name" 2>/dev/null)" = wallpaper ]; then
+        theme_from_wall "$f"; theme_apply
+    else
+        theme_lock
+    fi
+    [ "$arg" = restore ] || ok "Wallpaper: $(basename "$f")"
+}
+
+# ── sesión ──────────────────────────────────────────────────────────
+cmd_reload() {
+    in_hypr || die "no estás dentro de Hyprland"
+    hyprctl reload >/dev/null && ok "Hyprland recargado"
+    pkill -x quickshell 2>/dev/null || true
+    for _ in $(seq 20); do pgrep -x quickshell >/dev/null || break; sleep 0.1; done
+    setsid -f quickshell >/dev/null 2>&1 && ok "Quickshell reiniciado"
+}
+
+cmd_doctor() {
+    local bad=0
+    info "Config de Hyprland"
+    if Hyprland --verify-config -c "$CONFIG_SRC/hypr/hyprland.lua" 2>&1 | grep -q '^config ok'; then ok "hyprland.lua sin errores"
+    else Hyprland --verify-config -c "$CONFIG_SRC/hypr/hyprland.lua" 2>&1 | sed -n '/Config parsing result/,$p'; bad=1; fi
+    info "Enlaces"
+    for src in "$CONFIG_SRC"/*/; do
+        src=${src%/}; local n; n=$(basename "$src")
+        if [ "$(readlink -f "$CFG_HOME/$n" 2>/dev/null)" = "$(readlink -f "$src")" ]; then ok "~/.config/$n"
+        else warn "~/.config/$n no apunta al repo (ceft-shell link)"; bad=1; fi
+    done
+    info "Paquetes (grupos: $(saved_groups))"
+    # shellcheck disable=SC2046
+    local miss; miss=$(missing_pkgs $(group_files $(saved_groups)))
+    if [ -z "$miss" ]; then ok "Todos instalados"; else warn "Faltan: $(echo $miss)"; bad=1; fi
+    info "Sistema"
+    [ -x /usr/local/bin/vpn-killswitch ] && ok "killswitch $(/usr/local/bin/vpn-killswitch state)" || { warn "killswitch sin instalar (ceft-shell system)"; bad=1; }
+    has claude && ok "claude $(claude --version 2>/dev/null | head -1)" || warn "Claude Code sin instalar: el widget de IA queda vacío (ceft-shell ai)"
+    has ddcutil && ok "ddcutil (brillo DDC/CI)" || warn "falta ddcutil (brillo del monitor): ceft-shell pkgs install"
+    if has snapper; then
+        snap_ready && ok "snapper (config root)" || { warn "snapper sin config para / (ceft-shell system)"; bad=1; }
+        systemctl is-active --quiet limine-snapper-sync.service 2>/dev/null && ok "limine-snapper-sync activo" || warn "limine-snapper-sync inactivo: los snapshots no salen en el menú de Limine"
+    else warn "sin snapshots (opcional): ceft-shell snapshots setup"; fi
+    has secret-tool && ok "secret-tool (keyring)" || warn "falta secret-tool (libsecret): ceft-shell secret no funciona"
+    local npend; npend=$(mig_files | while read -r f; do [ -n "$f" ] && ! mig_done "$(basename "$f" .sh)" && echo x; done | wc -l)
+    [ "$npend" -eq 0 ] && ok "migraciones al día" || warn "$npend migración(es) pendiente(s): ceft-shell migrate"
+    has awww && has matugen && ok "awww + matugen" || warn "faltan awww/matugen (wallpaper y colores dinámicos)"
+    info "Repo"
+    git -C "$CEFT_DIR" status -sb | head -1
+    [ -z "$(git -C "$CEFT_DIR" status --porcelain)" ] || warn "Hay cambios sin guardar (ceft-shell save)"
+    return $bad
+}
+
+# ── git ─────────────────────────────────────────────────────────────
+git_c() { git -C "$CEFT_DIR" "$@"; }
+
+cmd_update() {
+    info "Trayendo cambios del repo"
+    git_c pull --ff-only
+    cmd_link
+    cmd_migrate || warn "Alguna migración falló: ceft-shell migrate --list (los respaldos están en $STATE_DIR/backups)"
+    # shellcheck disable=SC2046
+    install_pkgs $(group_files $(saved_groups))
+    theme_kitty
+    in_hypr && cmd_reload || true
+    ok "ceft-shell $(cat "$CEFT_DIR/VERSION") al día"
+}
+
+cmd_upgrade() {
+    info "Actualizando el sistema"
+    ensure_paru
+    local pre="" rc=0
+    if snap_ready; then
+        pre=$(snap_run -c root create --type pre --print-number --description "ceft-shell upgrade" 2>/dev/null) \
+            && ok "Snapshot previo #$pre" || { warn "No pude crear el snapshot previo; sigo sin red de seguridad"; pre=""; }
+    else
+        warn "Sin snapshots (snapper no está configurado): ceft-shell snapshots setup"
+    fi
+    paru -Syu || rc=$?
+    if [ -n "$pre" ]; then
+        snap_run -c root create --type post --pre-number "$pre" --description "ceft-shell upgrade" >/dev/null 2>&1 \
+            && ok "Snapshot posterior (pre #$pre)" || warn "No pude crear el snapshot posterior"
+    fi
+    [ "$rc" -eq 0 ] || die "paru terminó con error ($rc); update no se ejecutó${pre:+ (volver atrás: ceft-shell snapshots rollback-help)}"
+    cmd_update
+}
+
+# ── snapshots (snapper + limine-snapper-sync) ───────────────────────
+snap_run() { if [ "$(id -u)" -eq 0 ]; then snapper "$@"; else sudo snapper "$@"; fi; }
+snap_ready() { has snapper && snap_run list-configs 2>/dev/null | awk 'NR>2 {print $1}' | grep -qx root; }
+
+cmd_snapshots() {
+    local sub=${1:-list}; shift || true
+    case $sub in
+        list)
+            snap_ready || die "snapper sin configurar para / (ceft-shell snapshots setup)"
+            snap_run -c root list ;;
+        create)
+            snap_ready || die "snapper sin configurar para / (ceft-shell snapshots setup)"
+            local desc=${*:-manual}
+            local n; n=$(snap_run -c root create --type single --print-number --description "$desc") && ok "Snapshot #$n: $desc" ;;
+        setup)
+            [ "$(id -u)" -ne 0 ] || die "no lo corras como root; pide sudo cuando lo necesita"
+            [ "$(findmnt -no FSTYPE / 2>/dev/null)" = btrfs ] || die "/ no es btrfs: no hay snapshots posibles"
+            mkdir -p "$STATE_DIR"
+            grep -qw snapshots <<<"$(saved_groups)" || { echo "$(saved_groups) snapshots" > "$STATE_DIR/groups"; ok "Grupo snapshots agregado a los grupos guardados"; }
+            ensure_paru
+            # shellcheck disable=SC2046
+            install_pkgs $(group_files snapshots)
+            sudo bash "$CEFT_DIR/system/snapper/install.sh" "$USER" ;;
+        rollback-help)
+            cat <<EOT
+${B}Volver atrás con un snapshot${N}
+  1. Ver los snapshots:        ceft-shell snapshots list   (upgrade crea un par pre/post "ceft-shell upgrade")
+  2. Reiniciá y en el menú de Limine elegí  "Snapshots"  y el snapshot anterior a la actualización.
+  3. Ya dentro, aparece una notificación (o corré: sudo limine-snapper-restore) para restaurarlo.
+     Eso deja el snapshot elegido como sistema y guarda el estado anterior como entrada "backup".
+  Sin Limine/snapshot booteable (sistema vivo, no bootea):
+     sudo snapper -c root undochange <pre>..<post>    deshace solo los archivos cambiados entre dos snapshots
+  Revisá antes:  limine-snapper-info   y   ceft-shell doctor
+EOT
+            ;;
+        *) die "uso: ceft-shell snapshots [list|create <descripción>|setup|rollback-help]" ;;
+    esac
+}
+
+# ── migraciones versionadas de config ───────────────────────────────
+# system/migrations/NNNN-nombre.sh: idempotentes; cabecera "# touches: <ruta relativa al repo>" para el respaldo.
+# Reciben CEFT_CONFIG_DIR (config/ceft-shell) y CEFT_DIR; con DRY_RUN=1 solo informan.
+MIG_DIR_DEFAULT="$CEFT_DIR/system/migrations"
+mig_state() { echo "$STATE_DIR/migrations"; }
+mig_done() { grep -qxF "$1" "$(mig_state)" 2>/dev/null; }
+mig_files() { local d=${CEFT_MIG_DIR:-$MIG_DIR_DEFAULT}; compgen -G "$d/[0-9][0-9][0-9][0-9]-*.sh" >/dev/null && printf '%s\n' "$d"/[0-9][0-9][0-9][0-9]-*.sh | sort; return 0; }
+
+mig_backup() {   # mig_backup <dir-respaldo> <script>
+    local dest=$1 f rel
+    while read -r rel; do
+        f="${CEFT_BASE:-$CEFT_DIR}/$rel"
+        [ -e "$f" ] || continue
+        mkdir -p "$dest/$(dirname "$rel")"; cp -a "$f" "$dest/$rel"
+    done < <(sed -n 's/^# touches:[[:space:]]*//p' "$2")
+}
+
+cmd_migrate() {
+    local mode=run
+    case ${1:-} in
+        --list|-l) mode=list ;;
+        --dry-run|-n) mode=dry ;;
+        "") ;;
+        *) die "uso: ceft-shell migrate [--list|--dry-run]" ;;
+    esac
+    local -a files; mapfile -t files < <(mig_files)
+    local f id pending=0 rc=0 bk=""
+    export CEFT_CONFIG_DIR="${CEFT_CONFIG_DIR:-$CONFIG_SRC/ceft-shell}" CEFT_DIR
+    for f in "${files[@]}"; do
+        [ -n "$f" ] || continue
+        id=$(basename "$f" .sh)
+        if [ "$mode" = list ]; then
+            mig_done "$id" && printf '%s ✓%s %s\n' "$G" "$N" "$id" || printf '%s ·%s %s (pendiente)\n' "$Y" "$N" "$id"
+            continue
+        fi
+        mig_done "$id" && continue
+        pending=$((pending+1))
+        if [ "$mode" = dry ]; then
+            info "[dry-run] $id"; DRY_RUN=1 bash "$f" || rc=1; continue
+        fi
+        [ -n "$bk" ] || { bk="$STATE_DIR/backups/$(date +%Y%m%d-%H%M%S)-migrate"; mkdir -p "$bk"; }
+        info "Migración $id"
+        mig_backup "$bk" "$f"
+        if bash "$f"; then mkdir -p "$STATE_DIR"; echo "$id" >> "$(mig_state)"; ok "$id aplicada"
+        else warn "$id falló; respaldo en $bk (se reintenta en el próximo update)"; rc=1; break; fi
+    done
+    if [ "$mode" != list ] && [ "$pending" -eq 0 ]; then ok "Sin migraciones pendientes"; fi
+    [ -z "$bk" ] || { rmdir "$bk" 2>/dev/null || true; [ ! -d "$bk" ] || ok "Respaldo: $bk"; }
+    return $rc
+}
+
+# ── secretos (keyring vía libsecret) ────────────────────────────────
+cmd_secret() {
+    local sub=${1:-} name=${2:-}
+    has secret-tool || die "falta secret-tool (paquete libsecret): ceft-shell pkgs install"
+    case $sub in
+        set)
+            [ -n "$name" ] || die "uso: ceft-shell secret set <nombre>   (el valor se lee del prompt o de stdin)"
+            local val
+            if [ -t 0 ]; then read -rsp "Valor de $name: " val; echo; else IFS= read -r val || true; fi
+            [ -n "$val" ] || die "valor vacío; no guardo nada"
+            printf '%s' "$val" | secret-tool store --label="ceft-shell: $name" service ceft-shell name "$name" \
+                || die "no pude guardar: ¿hay un servicio de secretos (gnome-keyring) corriendo y desbloqueado?"
+            ok "Guardado: $name" ;;
+        get)
+            [ -n "$name" ] || die "uso: ceft-shell secret get <nombre>"
+            secret-tool lookup service ceft-shell name "$name" || { echo "no existe el secreto: $name" >&2; return 1; } ;;
+        delete)
+            [ -n "$name" ] || die "uso: ceft-shell secret delete <nombre>"
+            secret-tool lookup service ceft-shell name "$name" >/dev/null 2>&1 || die "no existe el secreto: $name"
+            secret-tool clear service ceft-shell name "$name" && ok "Borrado: $name" ;;
+        list)
+            secret-tool search --all service ceft-shell 2>&1 | sed -n 's/^attribute\.name = //p' | sort -u ;;
+        *) die "uso: ceft-shell secret set|get|delete <nombre> | list" ;;
+    esac
+}
+
+# ── VPN ─────────────────────────────────────────────────────────────
+# `vpn import <archivo.ovpn> [nombre]`: crea la conexión en NetworkManager (sin autoconectar) y deja el killswitch
+# apuntando a ese servidor. Los certificados quedan en NetworkManager, nunca en el repo.
+cmd_vpn() {
+    case ${1:-} in
+        import)
+            local f=${2:-} name=${3:-}
+            [ -f "$f" ] || die "uso: ceft-shell vpn import <archivo.ovpn> [nombre]"
+            has nmcli || die "falta NetworkManager (nmcli)"
+            name=${name:-$(basename "$f" .ovpn)}
+            local server port proto
+            read -r _ server port <<<"$(grep -m1 -E '^remote ' "$f")"
+            proto=$(awk '$1=="proto"{print $2; exit}' "$f" | sed 's/-.*//'); proto=${proto:-udp}
+            nmcli connection import type openvpn file "$f" >/dev/null || die "nmcli no pudo importar $f"
+            local imported; imported=$(basename "$f" .ovpn)
+            [ "$imported" = "$name" ] || nmcli connection modify "$imported" connection.id "$name"
+            nmcli connection modify "$name" connection.autoconnect no
+            ok "Conexión «$name» creada (sin autoconectar): nmcli connection up \"$name\""
+            if [ -n "$server" ] && [ -x /usr/local/bin/vpn-killswitch ]; then
+                sudo sed -i -e "s|^VPN_SERVER=.*|VPN_SERVER=\"$server\"|" -e "s|^VPN_PORT=.*|VPN_PORT=\"${port:-1194}\"|" \
+                    -e "s|^VPN_PROTO=.*|VPN_PROTO=\"$proto\"|" /etc/vpn-killswitch.conf \
+                    && ok "Killswitch apunta a $server:${port:-1194}/$proto (sudo vpn-killswitch on para activarlo)"
+            fi ;;
+        *) die "uso: ceft-shell vpn import <archivo.ovpn> [nombre]" ;;
+    esac
+}
+
+# ── archivos sueltos (copia, no enlace) ─────────────────────────────
+# Apps como Dolphin/htop reescriben su archivo al guardar y rompen los symlinks, así que se copian.
+files_list() { grep -vE '^\s*(#|$)' "$CEFT_DIR/files.txt" 2>/dev/null || true; }
+
+files_push() {   # ~/.config → repo/files
+    local f src dst n=0
+    while read -r f; do
+        src="$CFG_HOME/$f"; dst="$CEFT_DIR/files/$f"
+        [ -f "$src" ] || continue
+        cmp -s "$src" "$dst" 2>/dev/null && continue
+        mkdir -p "$(dirname "$dst")"; cp "$src" "$dst"; n=$((n+1))
+    done < <(files_list)
+    [ "$n" -eq 0 ] || ok "$n archivo(s) sueltos copiados al repo"
+}
+
+files_pull() {   # repo/files → ~/.config (respalda lo distinto)
+    local f src dst backup="$STATE_DIR/backups/$(date +%Y%m%d-%H%M%S)-files" n=0
+    while read -r f; do
+        src="$CEFT_DIR/files/$f"; dst="$CFG_HOME/$f"
+        [ -f "$src" ] || continue
+        cmp -s "$src" "$dst" 2>/dev/null && continue
+        if [ -f "$dst" ]; then mkdir -p "$backup/$(dirname "$f")"; cp "$dst" "$backup/$f"; fi
+        mkdir -p "$(dirname "$dst")"; cp "$src" "$dst"; n=$((n+1))
+    done < <(files_list)
+    [ "$n" -eq 0 ] || ok "$n archivo(s) sueltos restaurados en ~/.config"
+}
+
+cmd_files() {
+    case ${1:-status} in
+        push) files_push ;;
+        pull) files_pull ;;
+        status) local f; while read -r f; do
+                    if [ ! -f "$CFG_HOME/$f" ]; then warn "$f: falta en ~/.config"
+                    elif cmp -s "$CFG_HOME/$f" "$CEFT_DIR/files/$f" 2>/dev/null; then ok "$f"
+                    else warn "$f: distinto al repo (ceft-shell files push)"; fi
+                done < <(files_list) ;;
+        *) die "uso: ceft-shell files [status|push|pull]" ;;
+    esac
+}
+
+cmd_save() {
+    local msg=${*:-"update: $(date '+%Y-%m-%d %H:%M')"}
+    files_push
+    if [ -z "$(git_c status --porcelain)" ]; then ok "Nada que guardar"; return; fi
+    if [ -f "$CONFIG_SRC/hypr/hyprland.lua" ] && has Hyprland; then
+        Hyprland --verify-config -c "$CONFIG_SRC/hypr/hyprland.lua" 2>&1 | grep -q '^config ok' \
+            || die "hyprland.lua tiene errores; no guardo (ceft-shell doctor)"
+    fi
+    git_c add -A
+    git_c status --short
+    git_c commit -q -m "$msg"
+    git_c push -q && ok "Guardado y subido: $msg"
+}
+
+cmd_release() {
+    local part=${1:-patch} v; v=$(cat "$CEFT_DIR/VERSION")
+    IFS=. read -r ma mi pa <<<"$v"
+    case $part in
+        major) ma=$((ma+1)); mi=0; pa=0 ;;
+        minor) mi=$((mi+1)); pa=0 ;;
+        patch) pa=$((pa+1)) ;;
+        *) die "uso: ceft-shell release [patch|minor|major]" ;;
+    esac
+    local nv="$ma.$mi.$pa"
+    [ -z "$(git_c status --porcelain)" ] || cmd_save "chore: cambios previos a v$nv"
+    echo "$nv" > "$CEFT_DIR/VERSION"
+    git_c add VERSION; git_c commit -q -m "release: v$nv"
+    git_c tag -a "v$nv" -m "ceft-shell v$nv"
+    git_c push -q --follow-tags
+    ok "Versión v$nv publicada"
+    has gh && gh release create "v$nv" --repo "$(git_c remote get-url origin)" --generate-notes >/dev/null 2>&1 \
+        && ok "GitHub release v$nv creado" || true
+}
+
+cmd_rollback() {
+    local tag=${1:-}
+    if [ -z "$tag" ]; then git_c tag --sort=-v:refname | head -10; echo "uso: ceft-shell rollback <tag>"; return; fi
+    [ -z "$(git_c status --porcelain)" ] || die "hay cambios sin guardar; ceft-shell save primero"
+    git_c checkout -q "$tag" && ok "En $tag (volver: git -C $CEFT_DIR checkout main)"
+    in_hypr && cmd_reload || true
+}
+
+# ── paquetes (comandos) ─────────────────────────────────────────────
+cmd_pkgs() {
+    local sub=${1:-missing}; shift || true
+    case $sub in
+        missing)
+            # shellcheck disable=SC2046
+            missing_pkgs $(group_files $(saved_groups)) ;;
+        new)   # instalados a mano que no están en ninguna lista
+            comm -23 <(pacman -Qqe | sort) <(read_list "$PKG_DIR"/*.txt "$PKG_DIR"/hardware/*.txt "$PKG_DIR/ignore.txt" | sort -u) ;;
+        add)
+            local grp=${1:-}; shift || true
+            [ -n "$grp" ] && [ $# -gt 0 ] || die "uso: ceft-shell pkgs add <grupo> <paquete...>"
+            [ -f "$PKG_DIR/$grp.txt" ] || die "no existe packages/$grp.txt"
+            ensure_paru; paru -S --needed "$@"
+            local p; for p in "$@"; do grep -qx "$p" "$PKG_DIR/$grp.txt" || echo "$p" >> "$PKG_DIR/$grp.txt"; done
+            ok "Agregados a packages/$grp.txt (ceft-shell save para subirlos)" ;;
+        install)
+            ensure_paru
+            # shellcheck disable=SC2046
+            install_pkgs $(group_files $(saved_groups)) ;;
+        *) die "uso: ceft-shell pkgs [missing|new|add <grupo> <pkg...>|install]" ;;
+    esac
+}
+
+# ── instalación completa ───────────────────────────────────────────
+enable_services() {
+    local scope unit
+    while read -r scope unit; do
+        [ -z "$scope" ] || [ "${scope:0:1}" = "#" ] && continue
+        if [ "$scope" = user ]; then systemctl --user enable "$unit" >/dev/null 2>&1 && ok "user: $unit" || warn "no pude habilitar $unit"
+        else
+            systemctl list-unit-files "$unit" >/dev/null 2>&1 || { warn "$unit no existe, salto"; continue; }
+            sudo systemctl enable "$unit" >/dev/null 2>&1 && ok "$unit" || warn "no pude habilitar $unit"
+        fi
+    done < "$CEFT_DIR/services.txt"
+}
+
+# Componentes del sistema que usa la barra (necesitan root)
+cmd_system() {
+    local ks="$CEFT_DIR/system/vpn-killswitch" rc=0
+    info "Killswitch VPN (/usr/local/bin/vpn-killswitch + sudoers + servicio docker)"
+    sudo bash "$ks/install.sh" "$USER" || rc=1
+    info "Brillo del monitor por DDC/CI (módulo i2c-dev + regla udev + grupo i2c)"
+    sudo bash "$CEFT_DIR/system/ddc/install.sh" "$USER" || rc=1
+    if has snapper && [ "$(findmnt -no FSTYPE / 2>/dev/null)" = btrfs ]; then
+        info "Snapshots btrfs (config de snapper para / + limine-snapper-sync)"
+        sudo bash "$CEFT_DIR/system/snapper/install.sh" "$USER" || rc=1
+    else
+        info "Snapshots: snapper sin instalar (opcional: ceft-shell snapshots setup)"
+    fi
+    return $rc
+}
+
+# Node (fnm) + herramientas de IA de ai.txt (Claude Code alimenta el widget de uso de IA)
+cmd_ai() {
+    has fnm || { ensure_paru; paru -S --needed fnm; }
+    eval "$(fnm env --shell bash)"
+    fnm ls 2>/dev/null | grep -q default || { info "Instalando Node LTS"; fnm install --lts; fnm default lts-latest 2>/dev/null || fnm default "$(fnm ls | awk '/v[0-9]/{print $2; exit}')"; }
+    fnm use default >/dev/null
+    local -a tools; mapfile -t tools < <(read_list "$CEFT_DIR/ai.txt")
+    local t missing=()
+    for t in "${tools[@]}"; do npm ls -g --depth=0 "$t" >/dev/null 2>&1 || missing+=("$t"); done
+    if [ ${#missing[@]} -gt 0 ]; then info "npm i -g ${missing[*]}"; npm i -g "${missing[@]}"; fi
+    ok "Herramientas de IA listas"
+    [ -d "$HOME/.claude" ] || warn "Abrí 'claude' una vez para iniciar sesión (y 'claude-personal' para la segunda cuenta): el widget de uso de IA lee ~/.claude*"
+    [ -f "$HOME/.claude/email-usage.env" ] || warn "Opcional: ~/.claude/email-usage.env con SMTP_USER/SMTP_PASS para el reporte por email (no se versiona)"
+}
+
+cmd_install() {
+    [ "$(id -u)" -ne 0 ] || die "no lo corras como root; pide sudo cuando lo necesita"
+    has pacman || die "solo para Arch Linux (o derivadas)"
+    local groups=""
+    while [ $# -gt 0 ]; do
+        case $1 in
+            --groups) groups=${2//,/ }; shift 2 ;;
+            --all)    groups=$(cd "$PKG_DIR" && ls *.txt | sed 's/\.txt$//' | grep -vx ignore | tr '\n' ' '); shift ;;
+            --yes|-y) export CEFT_YES=1; shift ;;
+            *) die "opción desconocida: $1" ;;
+        esac
+    done
+    groups=${groups:-$(saved_groups)}
+    mkdir -p "$STATE_DIR"; echo "$groups" > "$STATE_DIR/groups"
+
+    info "ceft-shell $(cat "$CEFT_DIR/VERSION") · grupos: $groups · hardware: $(hardware_lists | xargs -rn1 basename | sed 's/\.txt//' | tr '\n' ' ')"
+    sudo -v
+    info "Sincronizando repos"; sudo pacman -Syu ${CEFT_YES:+--noconfirm}
+    ensure_paru
+    # shellcheck disable=SC2046
+    install_pkgs $(group_files $groups)
+
+    info "Enlazando configs"; cmd_link
+    info "Servicios";         enable_services
+    cmd_system || warn "No pude instalar el killswitch (ceft-shell system para reintentar)"
+    if grep -qw dev <<<"$groups"; then cmd_ai || warn "No pude instalar las herramientas de IA (ceft-shell ai para reintentar)"; fi
+
+    if getent group docker >/dev/null && ! id -nG | grep -qw docker; then
+        sudo usermod -aG docker "$USER" && ok "Agregado al grupo docker"
+    fi
+    if has fish && [ "$(getent passwd "$USER" | cut -d: -f7)" != "$(command -v fish)" ]; then
+        chsh -s "$(command -v fish)" && ok "Shell por defecto: fish"
+    fi
+    [ -f "$CONFIG_SRC/hypr/local.lua" ] || cp "$CONFIG_SRC/hypr/local.example.lua" "$CONFIG_SRC/hypr/local.lua"
+
+    echo
+    ok "Listo. Reiniciá y elegí Hyprland en SDDM."
+    info "Monitores y dispositivos de esta máquina: $CONFIG_SRC/hypr/local.lua"
+}
+
+cmd_binds() {
+    grep -oE '\{ "[a-z0-9.]+",\s+"[^"]+"' "$CONFIG_SRC/hypr/ceft/binds.lua" \
+        | sed -E 's/\{ "([^"]+)",\s+"([^"]+)"/\1\t\2/' | column -t -s $'\t'
+    echo "  ws.focus.1-9 / ws.move.1-9    \$mod + 1-9 / \$mod + SHIFT + 1-9"
+}
+
+cmd_edit() {
+    local f=${1:-settings}
+    case $f in
+        settings) f="$CONFIG_SRC/hypr/settings.lua" ;;
+        local)    f="$CONFIG_SRC/hypr/local.lua"; [ -f "$f" ] || cp "$CONFIG_SRC/hypr/local.example.lua" "$f" ;;
+        binds)    f="$CONFIG_SRC/hypr/ceft/binds.lua" ;;
+        bar)      f="$CONFIG_SRC/quickshell/Bar.qml" ;;
+        *)        f="$CEFT_DIR/$f" ;;
+    esac
+    "${EDITOR:-helix}" "$f"
+    has Hyprland && { Hyprland --verify-config -c "$CONFIG_SRC/hypr/hyprland.lua" 2>&1 | grep -q '^config ok' && ok "Config válida" || warn "La config tiene errores: ceft-shell doctor"; }
+}
+
+# ── modo juego ──────────────────────────────────────────────────────
+# Estado: $XDG_RUNTIME_DIR/ceft-gamemode (existe = activo; guarda si no molestar ya estaba activo y el pid de gamemoded)
+RUN_DIR="${XDG_RUNTIME_DIR:-/tmp}"
+GM_FILE="$RUN_DIR/ceft-gamemode"
+
+gm_active() { [ -f "$GM_FILE" ]; }
+
+# No molestar: servidor de notificaciones de Quickshell (qs ipc call notifs ...); si no responde, dunst como respaldo
+dnd_get() {
+    local r
+    if has qs && r=$(qs ipc call notifs getDnd 2>/dev/null) && [ -n "$r" ]; then echo "$r"; return; fi
+    has dunstctl && dunstctl is-paused 2>/dev/null || echo false
+}
+dnd_set() {   # true|false
+    has qs && qs ipc call notifs setDnd "$1" >/dev/null 2>&1 && return 0
+    has dunstctl && dunstctl set-paused "$1" 2>/dev/null
+    return 0
+}
+
+# Aplica los ajustes "sin adornos" en vivo (no toca overrides.json); `hyprctl reload` los revierte
+gm_apply_look() {
+    in_hypr || return 0
+    hyprctl eval 'hl.config({ animations = { enabled = false }, decoration = { blur = { enabled = false }, shadow = { enabled = false } }, general = { gaps_in = 0, gaps_out = 0 } })' >/dev/null
+}
+
+gm_on() {
+    gm_active && { ok "Modo juego ya estaba activo"; return; }
+    local was_paused=false gpid=
+    [ "$(dnd_get)" = true ] && was_paused=true
+    in_hypr || warn "fuera de Hyprland: solo aplico no molestar"
+    gm_apply_look
+    dnd_set true
+    if has gamemoderun; then
+        gpid=$(setsid -f gamemoderun sleep infinity >/dev/null 2>&1 </dev/null; sleep 0.2; pgrep -n -f '^sleep infinity$' || true)
+    fi
+    printf 'was_paused=%s\ngamemoded_pid=%s\n' "$was_paused" "$gpid" > "$GM_FILE"
+    ok "Modo juego: activado (sin animaciones, blur, sombras ni huecos; no molestar)"
+}
+
+gm_off() {
+    gm_active || { ok "Modo juego ya estaba desactivado"; return; }
+    local was_paused=false gpid=
+    # shellcheck disable=SC1090
+    was_paused=$(sed -n 's/^was_paused=//p' "$GM_FILE"); gpid=$(sed -n 's/^gamemoded_pid=//p' "$GM_FILE")
+    rm -f "$GM_FILE"
+    [[ $gpid =~ ^[0-9]+$ ]] && kill "$gpid" 2>/dev/null || true
+    in_hypr && hyprctl reload >/dev/null
+    [ "$was_paused" != true ] && dnd_set false
+    ok "Modo juego: desactivado"
+}
+
+cmd_gamemode() {
+    local json=0 act= a
+    for a in "$@"; do case $a in --json) json=1 ;; *) act=$a ;; esac; done
+    case ${act:-status} in
+        on)     gm_on ;;
+        off)    gm_off ;;
+        toggle) if gm_active; then gm_off; else gm_on; fi ;;
+        status) ;;
+        *) die "uso: ceft-shell gamemode [on|off|toggle|status] [--json]" ;;
+    esac
+    if [ "$json" = 1 ]; then
+        gm_active && echo '{"on": true}' || echo '{"on": false}'
+    elif [ "${act:-status}" = status ]; then
+        gm_active && echo "activo" || echo "desactivado"
+    fi
+}
+
+# ── brillo (DDC/CI con ddcutil; backlight interno con brightnessctl) ─
+# Caché en $XDG_RUNTIME_DIR/ceft-brightness: una línea por monitor "<bus> <max> <porcentaje>" (se rehace tras reiniciar)
+BR_CACHE="$RUN_DIR/ceft-brightness"
+BR_LOCK="$RUN_DIR/ceft-brightness.lock"
+I2C_DEV_PREFIX="${CEFT_I2C_DEV_PREFIX:-/dev/i2c-}"
+DDC_OPTS=(--noverify --sleep-multiplier "${CEFT_DDC_SLEEP:-0.1}")
+
+br_backlight() {   # imprime "<pct>" si hay backlight interno
+    has brightnessctl || return 1
+    local line; line=$(brightnessctl -c backlight -m info 2>/dev/null | head -1) || return 1
+    [ -n "$line" ] || return 1
+    local pct; pct=$(awk -F, '{gsub("%","",$4); print $4}' <<<"$line")
+    [[ $pct =~ ^[0-9]+$ ]] || return 1
+    echo "$pct"
+}
+
+br_detect() {   # rehace la caché: ddcutil detect es lento (varios segundos)
+    has ddcutil || die "falta ddcutil (sudo pacman -S ddcutil) para controlar el brillo del monitor"
+    local out buses
+    out=$(ddcutil detect --brief 2>&1) || true
+    # solo bloques "Display N" (los "Invalid display" no hablan DDC/CI)
+    buses=$(awk '/^Display /{ok=1; next} /^[^ \t]/{ok=0} ok && /I2C bus:/{sub(/.*\/dev\/i2c-/,""); print $1}' <<<"$out")
+    if [ -z "$buses" ]; then
+        if ! compgen -G "${I2C_DEV_PREFIX}[0-9]*" >/dev/null; then
+            die "no existen /dev/i2c-*: cargá el módulo (sudo modprobe i2c-dev) o corré 'ceft-shell system'"
+        fi
+        grep -qi 'permission denied' <<<"$out" && die "sin permiso para /dev/i2c-*: corré 'ceft-shell system' y volvé a iniciar sesión"
+        die "ningún monitor responde a DDC/CI (activalo en el menú del monitor)"
+    fi
+    : > "$BR_CACHE.new"
+    local b
+    for b in $buses; do echo "$b 100 -1" >> "$BR_CACHE.new"; done
+    mv "$BR_CACHE.new" "$BR_CACHE"
+}
+
+br_check_access() {   # error claro si falta permiso sobre algún bus
+    local b rest
+    while read -r b rest; do
+        [ -r "$I2C_DEV_PREFIX$b" ] && [ -w "$I2C_DEV_PREFIX$b" ] \
+            || die "sin permiso para $I2C_DEV_PREFIX$b: corré 'ceft-shell system' (grupo i2c) y volvé a iniciar sesión"
+    done < "$BR_CACHE"
+}
+
+br_read_hw() {   # lee del primer monitor y actualiza la caché; imprime el porcentaje
+    local b max cur out
+    read -r b _ _ < "$BR_CACHE"
+    out=$(ddcutil getvcp 10 --brief --bus "$b" --sleep-multiplier "${CEFT_DDC_SLEEP:-0.1}" 2>&1) || {
+        rm -f "$BR_CACHE"; die "no pude leer el brillo (bus $b): $(tail -1 <<<"$out")"; }
+    # VCP 10 C <actual> <máximo>
+    read -r _ _ _ cur max <<<"$(grep -m1 '^VCP 10 C' <<<"$out")"
+    [[ ${cur:-} =~ ^[0-9]+$ && ${max:-} =~ ^[0-9]+$ && $max -gt 0 ]] || die "respuesta DDC inesperada: $out"
+    local pct=$(( (cur * 100 + max / 2) / max ))
+    awk -v max="$max" -v pct="$pct" '{print $1, max, pct}' "$BR_CACHE" > "$BR_CACHE.new" && mv "$BR_CACHE.new" "$BR_CACHE"
+    echo "$pct"
+}
+
+br_ensure() { [ -s "$BR_CACHE" ] || br_detect; }
+
+br_cached_pct() { local p; read -r _ _ p < "$BR_CACHE"; if [ "$p" = -1 ]; then br_read_hw; else echo "$p"; fi; }
+
+# Trabajador en segundo plano: escribe a todos los monitores hasta que el valor de la caché ya no cambie
+# (así las teclas con repetición no apilan procesos ni bloquean la UI)
+br_worker() {
+    local last=-2 b max pct raw
+    while :; do
+        local lines; lines=$(cat "$BR_CACHE" 2>/dev/null) || exit 0
+        pct=$(awk 'NR==1{print $3}' <<<"$lines")
+        if [ "$pct" = "$last" ]; then   # recheck corto: un set justo ahora no queda sin escribir
+            sleep 0.1
+            [ "$(awk 'NR==1{print $3}' "$BR_CACHE" 2>/dev/null)" = "$pct" ] && exit 0
+            continue
+        fi
+        last=$pct
+        while read -r b max pct; do
+            raw=$(( (pct * max + 50) / 100 ))
+            ddcutil setvcp 10 "$raw" --bus "$b" "${DDC_OPTS[@]}" >/dev/null 2>&1 \
+                || echo "$(date +%T) setvcp bus $b falló" >> "$RUN_DIR/ceft-brightness.log"
+        done <<<"$lines"
+    done
+}
+
+br_json() { printf '{"value": %s, "max": 100, "method": "%s"}\n' "$1" "$2"; }
+
+cmd_brightness() {
+    local json=0 a; local -a pos=()
+    for a in "$@"; do case $a in --json) json=1 ;; *) pos+=("$a") ;; esac; done
+    local method=ddc pct bl arg=${pos[0]:-get}
+    case $arg in
+        _worker) br_worker; return ;;
+        set) arg=${pos[1]:-}; [[ $arg =~ ^[0-9]+$ ]] || die "uso: ceft-shell brightness set <0-100>" ;;
+        get) ;;
+        *) [[ $arg =~ ^[+-]?[0-9]+$ ]] || die "uso: ceft-shell brightness [get|set <0-100>|+<n>|-<n>] [--json]" ;;
+    esac
+    [[ $arg == get || $arg =~ ^[+-]?[0-9]+$ ]] || die "valor inválido '$arg' (0-100, +n o -n)"
+
+    if bl=$(br_backlight); then
+        method=backlight
+        case $arg in
+            get) ;;
+            +*) brightnessctl -c backlight -q set "${arg#+}%+" ;;
+            -*) brightnessctl -c backlight -q set "${arg#-}%-" ;;
+            *)  brightnessctl -c backlight -q set "$(( arg > 100 ? 100 : arg ))%" ;;
+        esac
+        pct=$(br_backlight)
+    else
+        mkdir -p "$RUN_DIR"
+        br_ensure
+        br_check_access
+        if [ "$arg" = get ]; then
+            pct=$(br_read_hw)
+        else
+            local cur; cur=$(br_cached_pct)
+            case $arg in
+                +*) pct=$(( cur + ${arg#+} )) ;;
+                -*) pct=$(( cur - ${arg#-} )) ;;
+                *)  pct=$((10#$arg)) ;;
+            esac
+            [ "$pct" -lt 0 ] && pct=0; [ "$pct" -gt 100 ] && pct=100
+            awk -v pct="$pct" '{print $1, $2, pct}' "$BR_CACHE" > "$BR_CACHE.new" && mv "$BR_CACHE.new" "$BR_CACHE"
+            # un solo trabajador a la vez (flock); si ya hay uno, toma el valor nuevo de la caché
+            setsid -f flock -n "$BR_LOCK" "$CEFT_DIR/bin/ceft-shell" brightness _worker >/dev/null 2>&1 </dev/null
+        fi
+    fi
+    # aviso en pantalla (OSD de Quickshell); en segundo plano y sin error si Quickshell no está
+    if [ "$arg" != get ] && has qs; then ( qs ipc call osd flash brightness "$pct" >/dev/null 2>&1 & ); fi
+    if [ "$json" = 1 ]; then br_json "$pct" "$method"; else echo "$pct"; fi
+}
+
+# ── bloqueos antes de apagar ────────────────────────────────────────
+# CEFT_DOWNLOAD_DIRS (separados por :) y CEFT_PARTIAL_MIN permiten probarlo fuera de ~/Downloads
+cmd_session_check() {
+    local json=0 a
+    for a in "$@"; do case $a in --json) json=1 ;; *) die "uso: ceft-shell session-check [--json]" ;; esac; done
+    local -a rows=()
+    local p pid
+    for p in pacman paru yay makepkg; do
+        pid=$(pgrep -x "$p" 2>/dev/null | head -1 || true)
+        [ -n "$pid" ] && rows+=("package-manager"$'\t'"$p está corriendo (pid $pid)")
+    done
+    [ -e "${CEFT_PACMAN_LOCK:-/var/lib/pacman/db.lck}" ] && rows+=("pacman-lock"$'\t'"existe ${CEFT_PACMAN_LOCK:-/var/lib/pacman/db.lck} (actualización en curso o interrumpida)")
+    local dirs d f
+    IFS=: read -ra dirs <<<"${CEFT_DOWNLOAD_DIRS:-$HOME/Downloads:$HOME/Descargas}"
+    for d in "${dirs[@]}"; do
+        [ -d "$d" ] || continue
+        while IFS= read -r f; do
+            [ -n "$f" ] && rows+=("download"$'\t'"descarga a medias: $f")
+        done < <(find "$d" -maxdepth 2 -type f \( -name '*.part' -o -name '*.crdownload' -o -name '*.download' \) \
+                    -mmin "-${CEFT_PARTIAL_MIN:-30}" 2>/dev/null | sort)
+    done
+    local st="$RUN_DIR/screenrecord.state" rpid rfile
+    if [ -f "$st" ]; then
+        read -r rpid rfile < "$st" || true
+        if [[ ${rpid:-} =~ ^[0-9]+$ ]] && kill -0 "$rpid" 2>/dev/null; then
+            rows+=("recording"$'\t'"grabación de pantalla en curso${rfile:+: $rfile}")
+        fi
+    fi
+    if [ "$json" = 1 ]; then
+        python3 -I -c 'import json,sys
+rows=[l.rstrip("\n").split("\t",1) for l in sys.stdin if l.strip()]
+print(json.dumps({"blockers":[{"kind":k,"detail":d} for k,d in rows]}, ensure_ascii=False))' \
+            < <(printf '%s\n' "${rows[@]+"${rows[@]}"}")
+    else
+        local r; for r in "${rows[@]+"${rows[@]}"}"; do printf '%s: %s\n' "${r%%$'\t'*}" "${r#*$'\t'}"; done
+    fi
+    [ ${#rows[@]} -eq 0 ]
+}
+
+# ── presets ─────────────────────────────────────────────────────────
+# config/ceft-shell/presets/<nombre>/: theme.name (+theme.json si es "wallpaper"), wallpaper, overrides.json,
+# widgets.json, bar.json, ui.json y meta.json {name, description, created}.
+PRESET_DIR="$CONFIG_SRC/ceft-shell/presets"
+PRESET_FILES="overrides.json widgets.json bar.json ui.json"
+
+preset_check() {
+    [[ $1 =~ ^[[:alnum:]_][[:alnum:]_\ .-]{0,47}$ ]] || die "nombre inválido '$1' (letras, números, espacio, - _ . ; hasta 48 caracteres)"
+}
+
+preset_list() {
+    local json=0; [ "${1:-}" = --json ] && json=1
+    local -a dirs=(); local d
+    for d in "$PRESET_DIR"/*/; do [ -f "${d}meta.json" ] && dirs+=("${d%/}"); done
+    if [ "$json" = 1 ]; then
+        [ ${#dirs[@]} -gt 0 ] || { echo '[]'; return; }
+        python3 -I - "${dirs[@]}" <<'PY'
+import json, os, sys
+out = []
+for d in sys.argv[1:]:
+    try: m = json.load(open(os.path.join(d, "meta.json")))
+    except Exception: m = {}
+    th = ""
+    try: th = open(os.path.join(d, "theme.name")).read().strip()
+    except Exception: pass
+    out.append({"id": os.path.basename(d), "name": m.get("name", os.path.basename(d)),
+                "description": m.get("description", ""), "created": m.get("created", ""), "theme": th})
+out.sort(key=lambda p: p["created"], reverse=True)
+print(json.dumps(out, ensure_ascii=False))
+PY
+        return
+    fi
+    [ ${#dirs[@]} -gt 0 ] || { echo "No hay presets (ceft-shell preset save <nombre> [descripción])"; return; }
+    python3 -I - "${dirs[@]}" <<'PY'
+import json, os, sys
+for d in sys.argv[1:]:
+    try: m = json.load(open(os.path.join(d, "meta.json")))
+    except Exception: m = {}
+    print("  %-24s %s  %s" % (os.path.basename(d), m.get("created", "")[:10], m.get("description", "")))
+PY
+}
+
+preset_save() {
+    local name=${1:-} desc=${2:-}
+    [ -n "$name" ] || die "uso: ceft-shell preset save <nombre> [descripción]"
+    preset_check "$name"
+    local src="$CONFIG_SRC/ceft-shell" dst="$PRESET_DIR/$name" tmp f
+    mkdir -p "$PRESET_DIR"
+    tmp=$(mktemp -d "$PRESET_DIR/.tmp.XXXXXX")
+    local theme; theme=$(cat "$src/theme.name" 2>/dev/null || echo wallpaper)
+    echo "$theme" > "$tmp/theme.name"
+    [ "$theme" = wallpaper ] && [ -f "$src/theme.json" ] && cp "$src/theme.json" "$tmp/theme.json"
+    cat "$STATE_DIR/wallpaper" > "$tmp/wallpaper" 2>/dev/null || rm -f "$tmp/wallpaper"
+    for f in $PRESET_FILES; do [ -f "$src/$f" ] && cp "$src/$f" "$tmp/$f"; done
+    python3 -I - "$tmp/meta.json" "$name" "$desc" <<'PY'
+import datetime, json, sys
+json.dump({"name": sys.argv[2], "description": sys.argv[3],
+           "created": datetime.datetime.now().astimezone().isoformat(timespec="seconds")},
+          open(sys.argv[1], "w"), ensure_ascii=False, indent=2)
+open(sys.argv[1], "a").write("\n")
+PY
+    rm -rf "$dst"; mv "$tmp" "$dst"
+    ok "Preset guardado: $name"
+}
+
+preset_load() {
+    local name=${1:-}
+    [ -n "$name" ] || die "uso: ceft-shell preset load <nombre>"
+    preset_check "$name"
+    local src="$PRESET_DIR/$name" dst="$CONFIG_SRC/ceft-shell" f
+    [ -f "$src/meta.json" ] || die "no existe el preset '$name' (ceft-shell preset list)"
+    for f in $PRESET_FILES; do
+        if [ -f "$src/$f" ]; then
+            python3 -I -c 'import json,sys; json.load(open(sys.argv[1]))' "$src/$f" || die "$f del preset es JSON inválido"
+        fi
+    done
+    for f in $PRESET_FILES; do
+        if [ -f "$src/$f" ]; then cp "$src/$f" "$dst/.$f.tmp" && mv "$dst/.$f.tmp" "$dst/$f"; else rm -f "$dst/$f"; fi
+    done
+    local theme; theme=$(cat "$src/theme.name" 2>/dev/null || echo wallpaper)
+    local wp=""; [ -f "$src/wallpaper" ] && wp=$(cat "$src/wallpaper")
+    if [ "$theme" = wallpaper ]; then
+        echo wallpaper > "$dst/theme.name"
+        [ -f "$src/theme.json" ] && cp "$src/theme.json" "$dst/theme.json"
+    fi
+    # wallpaper: cmd_wall aplica la imagen y, con tema "wallpaper", regenera colores (y recarga Hyprland)
+    if [ -n "$wp" ] && [ -f "$wp" ]; then
+        ( cmd_wall "$wp" ) || warn "no pude aplicar el wallpaper $wp"
+    elif [ -n "$wp" ]; then
+        warn "el wallpaper del preset ya no existe: $wp"
+    fi
+    if [ "$theme" != wallpaper ]; then
+        if [ -f "$THEME_DIR/$theme.json" ]; then ( cmd_theme "$theme" ) || warn "no pude aplicar el tema $theme"
+        else warn "el tema '$theme' ya no existe"; fi
+    fi
+    in_hypr && hyprctl reload >/dev/null 2>&1 || true
+    ok "Preset cargado: $name"
+}
+
+preset_delete() {
+    local name=${1:-}
+    [ -n "$name" ] || die "uso: ceft-shell preset delete <nombre>"
+    preset_check "$name"
+    [ -f "$PRESET_DIR/$name/meta.json" ] || die "no existe el preset '$name'"
+    rm -rf "${PRESET_DIR:?}/$name"
+    ok "Preset borrado: $name"
+}
+
+cmd_preset() {
+    local sub=${1:-list}; shift || true
+    case $sub in
+        list|ls) preset_list "$@" ;;
+        save)    preset_save "$@" ;;
+        load|apply) preset_load "$@" ;;
+        delete|rm)  preset_delete "$@" ;;
+        *) die "uso: ceft-shell preset list [--json] | save <nombre> [descripción] | load <nombre> | delete <nombre>" ;;
+    esac
+}
+
+usage() {
+    cat <<EOF
+${B}ceft-shell$N $(cat "$CEFT_DIR/VERSION") · $CEFT_DIR
+
+${B}Instalar${N}
+  install [--groups a,b] [--all] [-y]   paquetes + enlaces + servicios (grupos: $(cd "$PKG_DIR" && ls *.txt | sed 's/\.txt//' | grep -vx ignore | tr '\n' ' '))
+  link                                  enlaza config/* en ~/.config (respalda lo que haya)
+  files [status|push|pull]              archivos sueltos de files.txt (mimeapps, dolphin, htop...) que se copian, no se enlazan
+  system                                killswitch VPN, acceso DDC/CI (i2c-dev, grupo i2c) y snapper si está instalado
+  vpn import <archivo.ovpn> [nombre]    importa tu VPN (sin autoconectar) y apunta el killswitch a ese servidor
+  ai                                    Node (fnm) + Claude Code (widget de uso de IA)
+
+${B}Día a día${N}
+  edit [settings|local|binds|bar]       abre el archivo y valida la config
+  theme [nombre|wallpaper|list]         cambia el tema (wallpaper = colores del fondo)
+  idle [<bloquear_min> <apagar_min>]    muestra/cambia la inactividad (0 = nunca; --json para parsear)
+  wall [next|prev|random|<archivo>|list] cambia el wallpaper (~/Pictures/Wallpapers)
+  binds                                 lista los atajos y sus ids
+  gamemode [on|off|toggle|status] [--json]   modo juego: sin animaciones/blur/sombras/huecos + no molestar (SUPER+G)
+  brightness [get|set N|+N|-N] [--json] brillo del monitor (DDC/CI con ddcutil o backlight)
+  session-check [--json]                bloqueos antes de apagar (pacman, descargas, grabación); salida 1 si hay
+  preset list [--json] | save <nombre> [desc] | load <nombre> | delete <nombre>   presets de apariencia
+  reload                                recarga Hyprland y reinicia la barra
+  doctor                                revisa config, enlaces y paquetes
+
+${B}Versiones${N}
+  save [mensaje]                        commit + push de tus cambios
+  update                                pull + enlaces + migraciones + paquetes nuevos + recarga
+  upgrade                               snapshot pre/post (si hay snapper) + paru -Syu + update
+  migrate [--list|--dry-run]            migraciones de config pendientes (system/migrations/)
+  snapshots [list|create <desc>|setup|rollback-help]   snapshots btrfs (snapper + limine-snapper-sync)
+  secret set|get|delete <nombre> | list   secretos en el keyring (libsecret, service=ceft-shell)
+  release [patch|minor|major]           sube la versión, crea tag y release
+  rollback [tag]                        vuelve a una versión anterior
+
+${B}Paquetes${N}
+  pkgs missing | new | install          qué falta / qué instalaste fuera de las listas
+  pkgs add <grupo> <pkg...>             instala y lo agrega a packages/<grupo>.txt
+EOF
+}
+
+cmd=${1:-help}; shift || true
+case $cmd in
+    install|link|system|ai|theme|wall|idle|reload|doctor|update|upgrade|save|release|rollback|pkgs|binds|edit|preset|gamemode|brightness|migrate|snapshots|secret|files|vpn) "cmd_$cmd" "$@" ;;
+    session-check) cmd_session_check "$@" ;;
+    version|-v|--version) cat "$CEFT_DIR/VERSION" ;;
+    help|-h|--help) usage ;;
+    *) usage; exit 1 ;;
+esac

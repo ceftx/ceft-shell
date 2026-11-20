@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Imprime un aviso si Bloq Mayús está activo (para la pantalla de bloqueo).
+for f in /sys/class/leds/*capslock/brightness; do
+    [ -r "$f" ] && [ "$(cat "$f")" != 0 ] && { echo "Bloq Mayús activado"; exit 0; }
+done
+exit 0

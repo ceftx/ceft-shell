@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Entrada de los atajos de captura: abre la herramienta de Quickshell; si no responde,
+# cae al flujo grim+slurp de scripts/screenshot.
+#   shot [region|output] [edit|copy]
+here=$(dirname "$(readlink -f "$0")")
+qs ipc call screenshot open "${1:-region}" "${2:-edit}" >/dev/null 2>&1 || exec "$here/screenshot" "$@"

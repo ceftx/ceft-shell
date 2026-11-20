@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Terminal desplegable: crea kitty (clase ceft-dropterm) la primera vez; después muestra/oculta.
+# La ventana va a special:dropterm por la regla de ceft/rules.lua.
+set -u
+CLASS=ceft-dropterm
+exists() { hyprctl clients -j 2>/dev/null | grep -q "\"class\": \"$CLASS\""; }
+toggle() { hyprctl dispatch 'hl.dsp.workspace.toggle_special("dropterm")' >/dev/null; }
+
+if exists; then toggle; exit 0; fi
+setsid -f kitty --class "$CLASS" >/dev/null 2>&1 </dev/null
+for _ in $(seq 40); do exists && break; sleep 0.1; done
+exists || { notify-send -u critical "dropterm" "kitty no arrancó" 2>/dev/null; exit 1; }
+sleep 0.15
+toggle

@@ -1,0 +1,10 @@
+# Apps de uso diario
+brave-bin
+firefox
+discord
+obsidian
+keepass
+wps-office
+proton-vpn-gtk-app
+visual-studio-code-insiders-bin
+opencode-beta

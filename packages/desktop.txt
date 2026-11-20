@@ -1,0 +1,60 @@
+# Entorno ceft-shell: Hyprland + barra + utilidades que usan los atajos
+hyprland
+uwsm
+xdg-desktop-portal-hyprland
+hyprpolkitagent
+hyprpicker
+hyprsunset
+hyprlock
+hypridle
+quickshell
+qt5-wayland
+qt6-wayland
+sddm
+kitty
+wofi
+libnotify
+pacman-contrib
+fish
+starship
+ttf-jetbrains-mono-nerd
+inter-font
+noto-fonts-emoji
+ttf-material-symbols-variable-git
+dolphin
+polkit-kde-agent
+xdg-utils
+# capturas / grabación
+grim
+slurp
+satty
+tesseract
+tesseract-data-spa
+tesseract-data-eng
+zxing-cpp
+gpu-screen-recorder
+wl-clipboard
+cliphist
+wtype
+# audio, brillo, multimedia
+pipewire
+pipewire-alsa
+pipewire-jack
+pipewire-pulse
+wireplumber
+gst-plugin-pipewire
+libpulse
+brightnessctl
+ddcutil          # brillo del monitor por DDC/CI (ceft-shell brightness; acceso: ceft-shell system)
+playerctl
+# wallpaper y colores dinámicos
+awww
+matugen
+# bluetooth y red (la barra gestiona VPN OpenVPN/WireGuard y el killswitch)
+bluez
+bluez-utils
+network-manager-applet
+networkmanager-openvpn
+openvpn
+wireguard-tools
+iptables

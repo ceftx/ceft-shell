@@ -1,0 +1,5 @@
+# Snapshots btrfs (opcional): `ceft-shell snapshots setup`. Requiere / en btrfs y bootloader Limine.
+snapper
+snap-pac
+inotify-tools
+limine-snapper-sync

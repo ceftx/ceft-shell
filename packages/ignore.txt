@@ -1,0 +1,5 @@
+# Instalados pero fuera de las listas a propósito (bootloader, AUR helper)
+limine
+efibootmgr
+paru
+paru-debug

@@ -1,0 +1,9 @@
+# Killswitch VPN · plantilla; la copia real vive en /etc/vpn-killswitch.conf (no se sube al repo)
+# Servidor OpenVPN al que se permite salir con el killswitch activo
+VPN_SERVER=""   # lo completa `ceft-shell vpn import <archivo.ovpn>`
+VPN_PORT="1194"
+VPN_PROTO="udp"
+VPN_IF="tun0"
+# Interfaz de salida a internet (`ip route`). Vacío = la de la ruta por defecto
+WAN_IF=""
+LAN_NET="192.168.0.0/24"   # tu red local (se deja pasar con el killswitch activo)

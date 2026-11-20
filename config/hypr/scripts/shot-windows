@@ -1,0 +1,25 @@
+#!/usr/bin/python3 -I
+# Ventanas visibles (para el selector de capturas): JSON [{x,y,w,h,floating,focus,class,title}]
+# en coordenadas globales lógicas. Las flotantes y las más recientes primero.
+import json, subprocess
+
+def hc(what):
+    return json.loads(subprocess.check_output(["hyprctl", "-j", what]))
+
+try:
+    vis = set()
+    for m in hc("monitors"):
+        vis.add(m["activeWorkspace"]["id"])
+        sp = m.get("specialWorkspace") or {}
+        if sp.get("id"):
+            vis.add(sp["id"])
+    out = []
+    for c in hc("clients"):
+        if c["workspace"]["id"] in vis and c["mapped"] and not c["hidden"]:
+            out.append({"x": c["at"][0], "y": c["at"][1], "w": c["size"][0], "h": c["size"][1],
+                        "floating": bool(c["floating"]), "focus": c.get("focusHistoryID", 99),
+                        "class": c.get("class", ""), "title": c.get("title", "")})
+    out.sort(key=lambda r: (not r["floating"], r["focus"]))
+    print(json.dumps(out))
+except Exception:
+    print("[]")

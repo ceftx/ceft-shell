@@ -1,0 +1,10 @@
+# Servicios a habilitar: <system|user> <unidad>
+system NetworkManager.service
+system bluetooth.service
+system sddm.service
+system ufw.service
+system docker.service
+system systemd-timesyncd.service
+user   pipewire.socket
+user   pipewire-pulse.socket
+user   wireplumber.service

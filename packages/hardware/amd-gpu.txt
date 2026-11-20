@@ -1,0 +1,4 @@
+# Se instala solo con GPU AMD
+mesa
+vulkan-radeon
+libva-mesa-driver
