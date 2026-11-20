@@ -134,6 +134,7 @@ PanelWindow {
     // ── barra de opciones ──
     ShotBar {
       id: obar
+      z: 10   // por encima del MouseArea de selección (declarado después): si no, se comían los clics
       visible: win.adjusting && shot.drag === "" && shot.mode !== "copy"
       shot: win.shot
       onPick: action => shot.act(action)

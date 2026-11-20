@@ -21,7 +21,6 @@
     "power"
   ],
   "tray": {
-    "tint": true,
     "hidden": [
       "nm-applet"
     ]
