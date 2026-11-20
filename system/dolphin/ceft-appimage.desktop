@@ -1,0 +1,16 @@
+[Desktop Entry]
+Type=Service
+ServiceTypes=KonqPopupMenu/Plugin
+MimeType=application/vnd.appimage;application/x-iso9660-appimage;application/x-executable;
+Actions=ceftAdd;ceftRun;
+X-KDE-Priority=TopLevel
+
+[Desktop Action ceftAdd]
+Name=Registrar en el launcher (ceft-shell)
+Icon=application-x-executable
+Exec=sh -c 'ceft-shell appimage add "$@" && notify-send "ceft-shell" "AppImage registrado: ahora sale en SUPER+M"' sh %F
+
+[Desktop Action ceftRun]
+Name=Ejecutar en segundo plano
+Icon=system-run
+Exec=ceft-shell appimage run %f

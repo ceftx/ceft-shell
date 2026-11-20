@@ -62,6 +62,7 @@ local function defaults(S)
         { "apps.terminal", "$mod + Return",     dsp.exec_cmd(A.terminal) },
         { "apps.controlcenter", "$mod + T",     dsp.exec_cmd("qs ipc call controlcenter toggle") },
         { "sidebar.toggle",     "$mod + N",     dsp.exec_cmd("qs ipc call sidebar toggle") },
+        { "apps.taskmgr",       "CTRL + SHIFT + Escape", dsp.exec_cmd("qs ipc call taskmgr toggle") },
         { "nightlight.on",  "$mod + R",         dsp.exec_cmd("hyprsunset -t " .. S.nightlight) },
         { "nightlight.off", "$mod + SHIFT + R", dsp.exec_cmd("pkill hyprsunset") },
 

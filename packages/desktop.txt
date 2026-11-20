@@ -58,3 +58,4 @@ networkmanager-openvpn
 openvpn
 wireguard-tools
 iptables
+python-psutil

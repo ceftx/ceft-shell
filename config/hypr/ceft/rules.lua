@@ -37,6 +37,15 @@ return function(S)
         ignore_alpha = 0.2,
     })
 
+    -- Administrador de tareas (Quickshell, taskmgr/TaskManager.qml): ventana flotante centrada
+    hl.window_rule({
+        name  = "ceft-taskmgr",
+        match = { title = "^Administrador de tareas$" },
+        float = true,
+        size  = "1040 700",
+        center = true,
+    })
+
     -- Terminal desplegable (SUPER+D, scripts/dropterm): kitty "ceft-dropterm" en el workspace
     -- especial "dropterm", flotante, 70% x 45%, centrada arriba, con slide desde arriba.
     -- "silent": al crearse no roba el foco; el script la muestra después.

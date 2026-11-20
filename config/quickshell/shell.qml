@@ -8,6 +8,7 @@ import qs.overview
 import qs.screenshot
 import qs.services
 import qs.sidebar
+import qs.taskmgr
 
 // Barra estilo Omarchy: una por monitor.
 //   izquierda: menú + workspaces
@@ -15,6 +16,7 @@ import qs.sidebar
 //   derecha:   tray, bluetooth, red, audio, batería, power
 ShellRoot {
   NetSettings {}
+  TaskManager {}
   Desktop {}
   ControlCenter {}
   Launcher {}

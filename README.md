@@ -133,3 +133,15 @@ ceft-shell secret list              # solo nombres
 Se guardan con el atributo `service=ceft-shell`. El reporte de uso por email
 (`config/quickshell/scripts/email-usage.py`) toma `SMTP_PASS` del entorno o de `~/.claude/email-usage.env`
 como siempre y, si no está, del keyring.
+
+## Administrador de tareas, apps ocultas y AppImages
+
+- **Administrador de tareas** (`Ctrl+Shift+Esc`, o `:` → «Administrador de tareas»): ventana Quickshell con procesos
+  agrupados por app (expandibles), búsqueda, orden por columna, *Finalizar tarea* (`Supr`, SIGTERM) y *Forzar* (SIGKILL),
+  y pestaña de rendimiento (CPU por núcleo, memoria, disco, red, GPU NVIDIA). Datos: `config/quickshell/scripts/taskmgr.py` (psutil).
+- **Ocultar apps del launcher** (`SUPER+M`): `Ctrl+H` oculta la seleccionada; el prefijo `!` lista las ocultas y `Enter` la vuelve a mostrar.
+  Se guarda en `config/ceft-shell/launcher.json` (se versiona con `ceft-shell save`).
+- **AppImages**: `ceft-shell appimage add archivo.AppImage` la mueve a `~/Applications`, la hace ejecutable y la registra con
+  su ícono para que salga en el launcher (se abre sin depender de ninguna terminal). Desde el launcher, el prefijo `+` lista las
+  AppImages sin registrar de `~/Downloads`/`~/Applications` y `Enter` registra. En Dolphin: clic derecho → *Registrar en el launcher*.
+  Para correr una desde terminal sin que muera al cerrarla: `appimage run archivo.AppImage` (log en `~/.local/state/ceft-shell/`).

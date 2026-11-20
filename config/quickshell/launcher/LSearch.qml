@@ -13,7 +13,7 @@ Item {
   width: 0; height: 0
 
   property string query: ""
-  function modeOf(q) { return q.startsWith("=") ? "calc" : q.startsWith(">") ? "cmd" : q.startsWith(":") ? "act" : q.startsWith("$") ? "clip" : q.startsWith(".") ? "emoji" : "apps" }
+  function modeOf(q) { return q.startsWith("=") ? "calc" : q.startsWith(">") ? "cmd" : q.startsWith(":") ? "act" : q.startsWith("$") ? "clip" : q.startsWith(".") ? "emoji" : q.startsWith("!") ? "hidden" : q.startsWith("+") ? "ai" : "apps" }
   function isGlyphQ(q) { return /^\.g(\s|$)/i.test(q) }
   readonly property bool glyphMode: mode === "emoji" && isGlyphQ(query)
   readonly property string mode: modeOf(query)
@@ -39,7 +39,8 @@ Item {
     { id: "suspend",     title: "Suspender", sub: "Pone el equipo a dormir", icon: "bedtime", kw: "dormir sleep", power: "suspend", confirm: true },
     { id: "logout",      title: "Cerrar sesión", sub: "Sale de Hyprland", icon: "logout", kw: "salir logout exit", power: "logout", confirm: true },
     { id: "reboot",      title: "Reiniciar el equipo", sub: "Reinicia el sistema", icon: "restart_alt", kw: "reboot", power: "reboot", confirm: true },
-    { id: "poweroff",    title: "Apagar", sub: "Apaga el equipo", icon: "power_settings_new", kw: "shutdown poweroff", power: "poweroff", confirm: true }
+    { id: "poweroff",    title: "Apagar", sub: "Apaga el equipo", icon: "power_settings_new", kw: "shutdown poweroff", power: "poweroff", confirm: true },
+    { id: "taskmgr",     title: "Administrador de tareas", sub: "Procesos y rendimiento · Ctrl+Shift+Esc", icon: "monitor_heart", kw: "task manager procesos btop kill matar cpu memoria rendimiento", cmd: "qs ipc call taskmgr open" }
   ]
   readonly property var clipActions: [
     { id: "clip-pause", title: clipPaused ? "Reanudar historial del portapapeles" : "Pausar historial del portapapeles", sub: clipPaused ? "Vuelve a guardar lo que copies" : "Deja de guardar lo que copies", icon: clipPaused ? "play_arrow" : "pause", kw: "clipboard portapapeles historial", cmd: clipCmdLine(["pause", "toggle"]) },
@@ -55,15 +56,55 @@ Item {
     pending = ""; wipePending = false
     const m = modeOf(query)
     if (m === "clip" && prevMode !== "clip") clipRefresh()
+    if (m === "ai" && prevMode !== "ai") aiList.running = true
     prevMode = m
     recompute()
   }
 
+  // ── apps ocultas (config/ceft-shell/launcher.json, se versiona con ceft-shell save) ──
+  property var hidden: []
+  readonly property string cfgPath: home + "/.config/ceft-shell/launcher.json"
+  FileView {
+    id: hiddenStore
+    path: s.cfgPath
+    blockLoading: true
+    printErrors: false
+    onLoaded: { try { s.hidden = JSON.parse(text()).hidden ?? [] } catch (e) { s.hidden = [] } s.rebuild() }
+  }
+  function saveHidden(list) {
+    hidden = list
+    hiddenStore.setText(JSON.stringify({ hidden: list }, null, 2) + "\n")
+    rebuild()
+  }
+  function hideApp(r) {
+    if (!r || r.kind !== "app") return false
+    if (!hidden.includes(r.id)) saveHidden(hidden.concat([r.id]))
+    say("«" + r.title + "» oculta · ! para verlas")
+    return true
+  }
+  function unhideApp(id, title) {
+    saveHidden(hidden.filter(h => h !== id))
+    say("«" + title + "» vuelve a aparecer")
+  }
+
+  // ── AppImages sin registrar (mode "ai", prefijo +) ──
+  property var aiFound: []
+  Process {
+    id: aiList
+    command: [s.cli, "appimage", "list", "--json"]
+    stdout: StdioCollector {
+      onStreamFinished: { try { s.aiFound = JSON.parse(text) } catch (e) { s.aiFound = [] } s.recompute() }
+    }
+  }
+
   // ── índice de aplicaciones ──
+  property var allApps: []
   function rebuild() {
-    const out = []
+    const out = [], all = []
     for (const e of DesktopEntries.applications.values) {
       if (e.noDisplay) continue
+      all.push(e)
+      if (hidden.includes(e.id)) continue
       const cmd = (e.command ?? []).join(" ")
       out.push({
         e: e, id: e.id, name: e.name,
@@ -73,6 +114,7 @@ Item {
         d: Fuzzy.norm(e.comment)
       })
     }
+    allApps = all
     index = out
     recompute()
   }
@@ -460,6 +502,16 @@ Item {
       list = clipResults(q)
     } else if (m === "emoji") {
       list = emojiResults(q)
+    } else if (m === "hidden") {
+      const qn = Fuzzy.norm(q.slice(1).trim())
+      list = allApps.filter(e => hidden.includes(e.id) && (qn === "" || Fuzzy.norm(e.name).includes(qn)))
+        .map(e => ({ kind: "action", id: "unhide-" + e.id, title: e.name, sub: "Enter: volver a mostrarla en el launcher", icon: "visibility", unhide: e.id }))
+      if (list.length === 0) list = [{ kind: "hint", title: hidden.length === 0 ? "No ocultaste ninguna app" : "Sin coincidencias", sub: "En la lista de apps, Ctrl+H oculta la seleccionada", icon: "visibility_off" }]
+    } else if (m === "ai") {
+      const qn = Fuzzy.norm(q.slice(1).trim())
+      list = aiFound.filter(a => !a.registered && (qn === "" || Fuzzy.norm(a.name).includes(qn)))
+        .map(a => ({ kind: "action", id: "ai-" + a.path, title: a.name.replace(/\.appimage$/i, ""), sub: "Enter: registrar en el launcher · " + a.path.replace(home, "~"), icon: "deployed_code", cmd: cli + " appimage add " + shq(a.path) }))
+      if (list.length === 0) list = [{ kind: "hint", title: "No hay AppImages sin registrar", sub: "Busco en ~/Applications, ~/Downloads y ~/Desktop · o clic derecho en Dolphin → Registrar", icon: "deployed_code" }]
     } else if (m === "act") {
       const qn = Fuzzy.norm(q.slice(1).trim())
       if (qn === "") list = allActions.map(a => Object.assign({ kind: "action" }, a))
@@ -522,6 +574,7 @@ Item {
     case "action":
       if (r.confirm && pending !== r.id) { pending = r.id; return false }
       pending = ""
+      if (r.unhide !== undefined) { unhideApp(r.unhide, r.title); return false }
       if (r.power) PowerGuard.request(r.power)
       else if (r.gamemode) GameMode.toggle()
       else sh(r.cmd)

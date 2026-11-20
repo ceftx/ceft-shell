@@ -47,6 +47,7 @@ Scope {
     function pause(): void { search.clipTogglePause() }
     function wipe(): void { search.clipWipeClick() }
     function query(text: string): void { if (!root.open) root.show(""); field.text = text }
+    function hide(): void { search.hideApp(search.results[curList.currentIndex]) }
     function accept(): void { root.accept(false) }
     function move(n: int): void { root.move(n) }
     function dump(): string { return "[" + field.text + "] " + search.mode + "\n" + search.results.map(r => r.kind + ":" + r.title).join("\n") }
@@ -158,7 +159,7 @@ Scope {
             Icon {
               id: ic
               anchors.centerIn: parent
-              readonly property var names: ({ apps: "search", calc: "calculate", cmd: "terminal", act: "bolt", clip: "content_paste", emoji: "mood" })
+              readonly property var names: ({ apps: "search", calc: "calculate", cmd: "terminal", act: "bolt", clip: "content_paste", emoji: "mood", hidden: "visibility_off", ai: "deployed_code" })
               name: names[search.mode]
               fill: search.mode === "apps" ? 0 : 1
               font.pixelSize: 26
@@ -192,6 +193,7 @@ Scope {
               else if (scope.clip && event.key === Qt.Key_Delete && field.cursorPosition === field.text.length) { root.deleteCurrent(); event.accepted = true }
               else if (scope.clip && ctrl && event.key === Qt.Key_Backspace) { root.deleteCurrent(); event.accepted = true }
               else if (scope.clip && ctrl && event.key === Qt.Key_P) { search.clipPin(search.results[curList.currentIndex], curList.currentIndex); event.accepted = true }
+              else if (search.mode === "apps" && ctrl && event.key === Qt.Key_H) { search.hideApp(search.results[curList.currentIndex]); event.accepted = true }
               else if (scope.emoji && ctrl && event.key === Qt.Key_T) { search.cycleTone(); event.accepted = true }
               else if (scope.gridOn && event.key === Qt.Key_Left && scope.gridOn) { root.move(-1, true); event.accepted = true }
               else if (scope.gridOn && event.key === Qt.Key_Right && scope.gridOn) { root.move(1, true); event.accepted = true }
@@ -206,7 +208,7 @@ Scope {
             Text {
               visible: field.text === ""
               anchors.verticalCenter: parent.verticalCenter
-              text: search.mode === "clip" ? "Buscar en el historial" : search.mode === "emoji" ? "Buscar emojis" : "Buscar aplicaciones"
+              text: search.mode === "clip" ? "Buscar en el historial" : search.mode === "emoji" ? "Buscar emojis" : search.mode === "hidden" ? "Apps ocultas" : search.mode === "ai" ? "AppImages sin registrar" : "Buscar aplicaciones"
               color: DeskTheme.textFaint
               font: field.font
             }
@@ -216,7 +218,7 @@ Scope {
           Rectangle {
             id: modeChip
             anchors { right: parent.right; rightMargin: 22; verticalCenter: parent.verticalCenter }
-            readonly property var labels: ({ apps: "", calc: "Calculadora", cmd: "Comando", act: "Acciones", clip: "Portapapeles", emoji: "Emojis" })
+            readonly property var labels: ({ apps: "", calc: "Calculadora", cmd: "Comando", act: "Acciones", clip: "Portapapeles", emoji: "Emojis", hidden: "Apps ocultas", ai: "AppImages" })
             readonly property string label: search.glyphMode ? "Glifos Nerd" : labels[search.mode]
             implicitWidth: label === "" ? 0 : chipText.implicitWidth + 22
             width: implicitWidth
@@ -488,7 +490,7 @@ Scope {
             opacity: noticeBox.visible ? 0 : 1
             Behavior on opacity { NumberAnimation { duration: Theme.animFast } }
             Repeater {
-              model: scope.emoji ? [{ k: "↵", t: "pegar" }, { k: "⇧↵", t: "copiar" }, { k: "←↑↓→", t: "mover" }, { k: "^T", t: "tono" }] : scope.clip ? [{ k: "↵", t: "pegar" }, { k: "⇧↵", t: "copiar" }, { k: "Supr", t: "borrar" }, { k: "^P", t: "fijar" }] : [{ k: "↑↓", t: "elegir" }, { k: "↵", t: "abrir" }, { k: "Esc", t: "cerrar" }]
+              model: scope.emoji ? [{ k: "↵", t: "pegar" }, { k: "⇧↵", t: "copiar" }, { k: "←↑↓→", t: "mover" }, { k: "^T", t: "tono" }] : scope.clip ? [{ k: "↵", t: "pegar" }, { k: "⇧↵", t: "copiar" }, { k: "Supr", t: "borrar" }, { k: "^P", t: "fijar" }] : search.mode === "apps" ? [{ k: "↑↓", t: "elegir" }, { k: "↵", t: "abrir" }, { k: "^H", t: "ocultar" }, { k: "Esc", t: "cerrar" }] : [{ k: "↑↓", t: "elegir" }, { k: "↵", t: "abrir" }, { k: "Esc", t: "cerrar" }]
               Row {
                 required property var modelData
                 spacing: 6
@@ -592,7 +594,7 @@ Scope {
             anchors { right: parent.right; rightMargin: 16; verticalCenter: parent.verticalCenter }
             spacing: 4
             Repeater {
-              model: [{ p: "=", t: "calcular" }, { p: ">", t: "comando" }, { p: ":", t: "acciones" }, { p: "$", t: "portapapeles" }, { p: ".", t: "emojis" }]
+              model: [{ p: "=", t: "calcular" }, { p: ">", t: "comando" }, { p: ":", t: "acciones" }, { p: "$", t: "portapapeles" }, { p: ".", t: "emojis" }, { p: "!", t: "ocultas" }, { p: "+", t: "AppImage" }]
               Rectangle {
                 id: pc
                 required property var modelData

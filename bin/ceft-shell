@@ -86,6 +86,8 @@ cmd_link() {
     [ -f "$CONFIG_SRC/hypr/hypridle.conf" ] || idle_conf
     [ $moved = 1 ] && info "Respaldo de configs anteriores: $backup"
     files_pull
+    local sm="${XDG_DATA_HOME:-$HOME/.local/share}/kio/servicemenus"
+    mkdir -p "$sm"; install -m 755 "$CEFT_DIR/system/dolphin/ceft-appimage.desktop" "$sm/ceft-appimage.desktop"
     ok "Enlaces listos"
 }
 
@@ -551,6 +553,120 @@ cmd_vpn() {
                     && ok "Killswitch apunta a $server:${port:-1194}/$proto (sudo vpn-killswitch on para activarlo)"
             fi ;;
         *) die "uso: ceft-shell vpn import <archivo.ovpn> [nombre]" ;;
+    esac
+}
+
+# ── AppImages ───────────────────────────────────────────────────────
+# add: mueve el .AppImage a ~/Applications, lo hace ejecutable y crea su entrada (con ícono) para el launcher.
+# run: lo lanza desacoplado de la terminal (cerrar la terminal NO cierra la app).
+AI_DIR="${CEFT_APPIMAGE_DIR:-$HOME/Applications}"
+AI_APPS="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+AI_ICONS="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/256x256/apps"
+ai_slug() { basename "$1" | sed -E 's/\.[Aa]pp[Ii]mage$//; s/[^A-Za-z0-9]+/-/g; s/^-+|-+$//g' | tr 'A-Z' 'a-z'; }
+
+ai_integrate() {
+    local f=$1 slug tmp name comment cats icon_name icon_src=""
+    slug=$(ai_slug "$f"); tmp=$(mktemp -d)
+    ( cd "$tmp" && timeout 60 "$f" --appimage-extract '*.desktop' >/dev/null 2>&1 \
+        && timeout 60 "$f" --appimage-extract '.DirIcon' >/dev/null 2>&1 || true )
+    local d; d=$(ls "$tmp"/squashfs-root/*.desktop 2>/dev/null | head -1 || true)
+    name=; comment=; cats=; icon_name=
+    if [ -n "$d" ]; then
+        name=$(sed -n 's/^Name=//p' "$d" | head -1); comment=$(sed -n 's/^Comment=//p' "$d" | head -1)
+        cats=$(sed -n 's/^Categories=//p' "$d" | head -1); icon_name=$(sed -n 's/^Icon=//p' "$d" | head -1)
+        if [ -n "$icon_name" ]; then
+            ( cd "$tmp" && timeout 60 "$f" --appimage-extract "$icon_name.*" >/dev/null 2>&1 || true )
+            icon_src=$(ls "$tmp"/squashfs-root/"$icon_name".png "$tmp"/squashfs-root/"$icon_name".svg 2>/dev/null | head -1 || true)
+        fi
+    fi
+    if [ -z "$icon_src" ] && [ -L "$tmp/squashfs-root/.DirIcon" ]; then icon_src="$tmp/squashfs-root/.DirIcon"; fi
+    if [ -L "$icon_src" ] && [ ! -e "$icon_src" ]; then   # symlink dentro del squashfs: extraer su destino
+        local tgt; tgt=$(readlink "$icon_src"); tgt=${tgt#/}
+        ( cd "$tmp" && timeout 60 "$f" --appimage-extract "$tgt" >/dev/null 2>&1 || true )
+        [ -e "$tmp/squashfs-root/$tgt" ] && icon_src="$tmp/squashfs-root/$tgt" || icon_src=""
+    fi
+    [ -n "$name" ] || name=$(basename "$f" | sed -E 's/\.[Aa]pp[Ii]mage$//; s/[-_]+/ /g')
+    local icon_field="application-x-executable"
+    if [ -n "$icon_src" ] && [ -f "$icon_src" ]; then
+        local ext=png; [[ $icon_src == *.svg ]] && ext=svg
+        mkdir -p "$AI_ICONS"; cp "$icon_src" "$AI_ICONS/appimage-$slug.$ext"
+        icon_field="$AI_ICONS/appimage-$slug.$ext"
+    fi
+    mkdir -p "$AI_APPS"
+    cat > "$AI_APPS/appimage-$slug.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=$name
+Comment=${comment:-AppImage}
+Exec="$f" %U
+Icon=$icon_field
+Terminal=false
+Categories=${cats:-Utility;}
+X-Ceft-AppImage=$f
+EOF
+    rm -rf "$tmp"
+    has update-desktop-database && update-desktop-database "$AI_APPS" 2>/dev/null || true
+    ok "$name registrado → aparece en SUPER+M"
+}
+
+ai_find() {   # ruta absoluta de los .AppImage en las carpetas habituales
+    local d
+    for d in "$AI_DIR" "$HOME/Downloads" "$HOME/Desktop"; do
+        [ -d "$d" ] && find "$d" -maxdepth 2 -type f -iname '*.appimage' 2>/dev/null
+    done | sort -u
+}
+ai_registered() { grep -lsFx "X-Ceft-AppImage=$1" "$AI_APPS"/appimage-*.desktop 2>/dev/null | head -1; }
+
+cmd_appimage() {
+    local sub=${1:-list}; shift || true
+    case $sub in
+        add)
+            [ $# -gt 0 ] || die "uso: ceft-shell appimage add <archivo.AppImage>..."
+            local f dest; mkdir -p "$AI_DIR"
+            for f in "$@"; do
+                [ -f "$f" ] || { warn "no existe: $f"; continue; }
+                f=$(readlink -f "$f"); dest="$AI_DIR/$(basename "$f")"
+                if [ "$f" != "$dest" ]; then
+                    [ ! -e "$dest" ] || { warn "ya existe $dest; lo dejo donde está"; dest=$f; }
+                    [ "$dest" = "$f" ] || { mv "$f" "$dest"; info "Movido a $dest"; }
+                fi
+                chmod +x "$dest"; ai_integrate "$dest"
+            done ;;
+        remove|rm)
+            local keep=1 t=${1:-}; [ "${2:-}" = "--delete" ] && keep=0
+            [ -n "$t" ] || die "uso: ceft-shell appimage remove <nombre|ruta> [--delete]"
+            local d f
+            d=$(ls "$AI_APPS"/appimage-*.desktop 2>/dev/null | grep -i -- "$(ai_slug "$t")" | head -1 || true)
+            [ -n "$d" ] || die "no encontré un AppImage registrado como «$t» (ceft-shell appimage list)"
+            f=$(sed -n 's/^X-Ceft-AppImage=//p' "$d")
+            rm -f "$d" "$AI_ICONS/$(basename "$d" .desktop).png" "$AI_ICONS/$(basename "$d" .desktop).svg"
+            [ $keep = 1 ] || rm -f "$f"
+            ok "Quitado del launcher$([ $keep = 1 ] && echo " (el archivo sigue en $f)")" ;;
+        run)
+            local f=${1:-}; shift || true
+            [ -x "$f" ] || die "uso: ceft-shell appimage run <archivo.AppImage> [args]"
+            mkdir -p "$STATE_DIR"
+            setsid -f nohup "$f" "$@" >"$STATE_DIR/appimage-$(ai_slug "$f").log" 2>&1 </dev/null
+            ok "$(basename "$f") corre en segundo plano (log: $STATE_DIR/appimage-$(ai_slug "$f").log)" ;;
+        sync)
+            local f d
+            while read -r f; do [ -n "$f" ] && [ "$(dirname "$f")" = "$AI_DIR" ] && { chmod +x "$f"; ai_integrate "$f"; }; done < <(ai_find)
+            for d in "$AI_APPS"/appimage-*.desktop; do
+                [ -e "$d" ] || continue
+                f=$(sed -n 's/^X-Ceft-AppImage=//p' "$d"); [ -e "$f" ] || { rm -f "$d"; warn "Quitado $(basename "$d") (el archivo ya no existe)"; }
+            done ;;
+        list|ls)
+            local json=0; [ "${1:-}" = "--json" ] && json=1
+            if [ $json = 1 ]; then
+                local f; ai_find | while read -r f; do printf '%s\t%s\n' "$f" "$([ -n "$(ai_registered "$f")" ] && echo 1 || echo 0)"; done \
+                    | python3 -c 'import sys,json;print(json.dumps([{"path":p,"registered":r=="1","name":p.rsplit("/",1)[-1]} for p,r in (l.rstrip("\n").split("\t") for l in sys.stdin)]))'
+            else
+                local f; while read -r f; do
+                    [ -n "$f" ] || continue
+                    if [ -n "$(ai_registered "$f")" ]; then ok "$f"; else printf '  · %s  (sin registrar)\n' "$f"; fi
+                done < <(ai_find)
+            fi ;;
+        *) die "uso: ceft-shell appimage add <archivo>... | remove <nombre> [--delete] | run <archivo> | sync | list [--json]" ;;
     esac
 }
 
@@ -1127,6 +1243,7 @@ ${B}Instalar${N}
   files [status|push|pull]              archivos sueltos de files.txt (mimeapps, dolphin, htop...) que se copian, no se enlazan
   system                                killswitch VPN, acceso DDC/CI (i2c-dev, grupo i2c) y snapper si está instalado
   vpn import <archivo.ovpn> [nombre]    importa tu VPN (sin autoconectar) y apunta el killswitch a ese servidor
+  appimage add|remove|run|sync|list     registra AppImages en el launcher (add) y córrelos sin atarlos a la terminal (run)
   ai                                    Node (fnm) + Claude Code (widget de uso de IA)
 
 ${B}Día a día${N}
@@ -1160,7 +1277,7 @@ EOF
 
 cmd=${1:-help}; shift || true
 case $cmd in
-    install|link|system|ai|theme|wall|idle|reload|doctor|update|upgrade|save|release|rollback|pkgs|binds|edit|preset|gamemode|brightness|migrate|snapshots|secret|files|vpn) "cmd_$cmd" "$@" ;;
+    install|link|system|ai|theme|wall|idle|reload|doctor|update|upgrade|save|release|rollback|pkgs|binds|edit|preset|gamemode|brightness|migrate|snapshots|secret|files|vpn|appimage) "cmd_$cmd" "$@" ;;
     session-check) cmd_session_check "$@" ;;
     version|-v|--version) cat "$CEFT_DIR/VERSION" ;;
     help|-h|--help) usage ;;
