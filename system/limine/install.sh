@@ -41,4 +41,10 @@ if ! grep -Eq '^[[:space:]]*TARGET_OS_NAME=' /etc/default/limine /etc/limine-sna
         exit 2
     fi
 fi
-limine-snapper-sync
+if ! limine-snapper-sync; then
+    if grep -Eq '^[[:space:]]*protocol:[[:space:]]*efi' "$conf"; then
+        echo "Tu entrada usa UKI (protocol:efi). Configurá kernel separado con respaldo así:" >&2
+        echo "  sudo bash $HERE/setup-kernel-boot.sh" >&2
+    fi
+    exit 1
+fi

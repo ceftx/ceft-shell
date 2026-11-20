@@ -162,3 +162,13 @@ en `/etc/default/limine`, detecta el nombre de la entrada de Arch y llama a `lim
 sudo bash ~/ceft-shell/system/shutdown/install.sh "$USER"
 sudo bash ~/ceft-shell/system/limine/install.sh
 ```
+
+Si `system/limine/install.sh` avisa `no kernel` porque Arch arranca con `protocol: efi` (UKI),
+hay que crear un initramfs separado. Este paso **modifica el arranque** y solo se ejecuta a propósito:
+
+```bash
+sudo bash ~/ceft-shell/system/limine/setup-kernel-boot.sh
+```
+
+Genera `initramfs-linux.img` sin dejar de generar el UKI, hace copias en `/var/backups/ceft-shell/`,
+y deja una entrada Linux normal más `Arch Linux (UKI, respaldo)` para volver al arranque original.
