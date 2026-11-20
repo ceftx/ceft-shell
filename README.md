@@ -156,7 +156,7 @@ CEFT_FAST_DB=1 sudo -E bash ~/ceft-shell/system/shutdown/install.sh "$USER"
 ```
 
 `system/limine/install.sh` detecta `limine.conf` incluso en `/boot/EFI/BOOT/`, escribe su `ESP_PATH`
-en `/etc/default/limine` y llama a `limine-snapper-sync`. Ambos pasos corren una sola vez con:
+en `/etc/default/limine`, detecta el nombre de la entrada de Arch y llama a `limine-snapper-sync`. Ambos pasos corren una sola vez con:
 
 ```bash
 sudo bash ~/ceft-shell/system/shutdown/install.sh "$USER"
