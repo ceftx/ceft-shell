@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Apunta limine-snapper-sync al directorio real que contiene limine.conf y lo sincroniza.
 set -euo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 [[ $EUID -eq 0 ]] || { echo "Ejecutar con sudo"; exit 1; }
 conf=${LIMINE_CONF:-}
 if [[ -z $conf ]]; then
@@ -26,6 +27,14 @@ if ! grep -Eq '^[[:space:]]*BOOT_PATH=' /etc/default/limine; then
     [[ -f /boot/vmlinuz-linux ]] && boot=/boot
     printf 'BOOT_PATH="%s"\n' "$boot" >> /etc/default/limine
     printf 'BOOT_PATH="%s" escrito en /etc/default/limine\n' "$boot"
+fi
+boot=$(sed -n 's/^BOOT_PATH=["\047]\(.*\)["\047]$/\1/p' /etc/default/limine | tail -1)
+boot=${boot:-$esp}
+# Una ejecución anterior puede haber creado el machine-id junto a limine.conf en vez de
+# en la raíz de la partición. Moverlo, nunca sobreescribir una carpeta existente.
+machine_id=$(cat /etc/machine-id)
+if [[ $boot != $esp && -d "$esp/$machine_id" ]]; then
+    [[ -e "$boot/$machine_id" ]] || { mv "$esp/$machine_id" "$boot/$machine_id"; echo "Movido $esp/$machine_id → $boot/$machine_id"; }
 fi
 
 # El nombre por defecto viene de /etc/os-release, pero la entrada de Arranque puede ser personalizada.
