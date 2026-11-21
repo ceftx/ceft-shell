@@ -13,7 +13,21 @@ if [[ -z $conf ]]; then
     conf=$(find /boot -maxdepth 3 -type f -name limine.conf -print -quit 2>/dev/null || true)
 fi
 [[ -n $conf && -f $conf ]] || { echo "No encontré limine.conf; pasa LIMINE_CONF=/ruta/al/limine.conf"; exit 1; }
-esp=$(dirname "$conf")
+# limine-snapper-sync resuelve boot():/ desde ESP_PATH, donde exige el limine.conf.
+# ESP_PATH es la PARTICIÓN raíz, no el directorio donde venía el archivo (p. ej. EFI/BOOT).
+fsroot=$(findmnt -no TARGET -T "$conf" 2>/dev/null || true)
+if [[ -n $fsroot && $conf != "$fsroot/limine.conf" ]]; then
+    esp=$fsroot
+    root_conf="$esp/limine.conf"
+    cp -a "$conf" "$conf.ceft-backup-$(date +%Y%m%d-%H%M%S)"
+    [[ -f $root_conf ]] || install -o root -g root -m 644 "$conf" "$root_conf"
+    mv "$conf" "$conf.ceft-backup"
+    conf=$root_conf
+    echo "limine.conf colocado en la raíz de la partición: $conf"
+    echo "El archivo anterior quedó como respaldo (sin nombre limine.conf)."
+else
+    esp=$(dirname "$conf")
+fi
 if [[ -f /etc/default/limine ]]; then
     cp -a /etc/default/limine "/etc/default/limine.ceft-backup-$(date +%Y%m%d-%H%M%S)"
     sed -i '/^[[:space:]]*ESP_PATH=/d' /etc/default/limine
