@@ -20,6 +20,13 @@ fi
 install -D -m 644 /dev/null /etc/default/limine
 printf 'ESP_PATH="%s"\n' "$esp" >> /etc/default/limine
 printf 'ESP_PATH="%s" escrito en /etc/default/limine\n' "$esp"
+# boot():/ se resuelve contra la raíz FAT, no contra el directorio EFI/BOOT de limine.conf.
+if ! grep -Eq '^[[:space:]]*BOOT_PATH=' /etc/default/limine; then
+    boot=$esp
+    [[ -f /boot/vmlinuz-linux ]] && boot=/boot
+    printf 'BOOT_PATH="%s"\n' "$boot" >> /etc/default/limine
+    printf 'BOOT_PATH="%s" escrito en /etc/default/limine\n' "$boot"
+fi
 
 # El nombre por defecto viene de /etc/os-release, pero la entrada de Arranque puede ser personalizada.
 # Si hay un único sistema raíz en limine.conf, lo usamos (no elegimos automáticamente entre varios).
@@ -41,10 +48,16 @@ if ! grep -Eq '^[[:space:]]*TARGET_OS_NAME=' /etc/default/limine /etc/limine-sna
         exit 2
     fi
 fi
-if ! limine-snapper-sync; then
+sync_output=$(limine-snapper-sync 2>&1) && rc=0 || rc=$?
+printf '%s\n' "$sync_output"
+if [[ $rc -ne 0 ]]; then
     if grep -Eq '^[[:space:]]*protocol:[[:space:]]*efi' "$conf"; then
         echo "Tu entrada usa UKI (protocol:efi). Configurá kernel separado con respaldo así:" >&2
         echo "  sudo bash $HERE/setup-kernel-boot.sh" >&2
     fi
+    exit 1
+fi
+if grep -Eq 'Missing file|Cannot create a snapshot|Skipping snapshot kernel entry|no valid kernel entry' <<<"$sync_output"; then
+    echo "No se crearon entradas válidas: revisá BOOT_PATH y limine.conf." >&2
     exit 1
 fi

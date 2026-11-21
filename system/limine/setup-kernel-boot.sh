@@ -39,6 +39,6 @@ else
     python3 "$HERE/convert-linux-entry.py" "$conf" "$target" "$cmdline"
     echo "Limine: Linux separado como entrada principal y UKI como respaldo."
 fi
-limine-snapper-sync
+bash "$HERE/install.sh"
 printf '\nListo. En el próximo arranque aparecen «%s» y «Arch Linux (UKI, respaldo)».\n' "$target"
 echo "Si Linux no arranca, elegí el UKI de respaldo."
