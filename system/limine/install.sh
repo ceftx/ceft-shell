@@ -36,7 +36,7 @@ if ! grep -Eq '^[[:space:]]*TARGET_OS_NAME=' /etc/default/limine /etc/limine-sna
     while IFS= read -r line; do
         name=${line#/}
         [[ $name == /* ]] && continue   # entradas //kernel, no sistemas
-        case ${name,,} in snapshots|backup*) continue ;; esac
+        case ${name,,} in snapshots|*backup*|*respaldo*) continue ;; esac
         entries+=("$name")
     done < <(grep -E '^[[:space:]]*/[^[:space:]/]' "$conf" || true)
     if [[ ${#entries[@]} -eq 1 ]]; then
